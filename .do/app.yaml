@@ -1,0 +1,67 @@
+# Supervisord App Platform Template
+# Web service with OpenTelemetry agent sidecar
+# Demonstrates multi-process management with supervisord
+#
+# Deploy with: doctl apps create --spec .do/app.yaml
+
+name: supervisord-app
+# Optionally you can chose a region where the deployment will be hosted
+# Otherwise, DO will chose the nearest region for you in the wizard
+# region: nyc
+
+services:
+  - name: supervisord-service
+    # Build from source (Dockerfile in repository root)
+    github:
+      repo: AppPlatform-Templates/supervisord-appplatform
+      branch: main
+      deploy_on_push: true
+
+    # Container configuration
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+
+    # Health check configuration
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 40
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+
+    # Environment variables
+    envs:
+      # Application Environment
+      - key: APP_ENV
+        value: production
+
+      # Port
+      - key: PORT
+        value: "8080"
+
+      # OpenTelemetry Configuration
+      # Enable OTEL instrumentation in the Flask app
+      - key: OTEL_ENABLED
+        value: "true"
+
+      # Flask app sends to local OTEL Collector sidecar
+      # The collector then forwards to your backend (configure in otel-collector-config.yaml)
+      - key: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://localhost:4318"
+
+      # Service name for distributed tracing
+      - key: OTEL_SERVICE_NAME
+        value: supervisord-app
+
+      # Template tracking
+      - key: APPPLAT_BASE_TEMPLATE
+        value: supervisord
+
+      - key: APPPLAT_TEMPLATE_TYPE
+        value: base
+
+      - key: APPPLAT_TEMPLATE_COMMIT_SHA
+        value: ${_self.COMMIT_HASH}
