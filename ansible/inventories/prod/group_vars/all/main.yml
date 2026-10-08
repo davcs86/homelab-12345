@@ -9,6 +9,11 @@ edge_name_prefix: edge                # droplets are edge-blue / edge-green
 edge_tag: homelab_edge                # firewall + inventory membership (groups: tag_homelab_edge[_blue|_green])
 edge_colors: [blue, green]
 
+# --- DNS ------------------------------------------------------------------
+# Owner-decided: apex domain, registered and hosted in AWS Route 53.
+# Records, IAM scope and hostname rules: docs/dns.md.
+edge_domain: nrdc.house
+
 # --- Droplet (deliverable 1) ----------------------------------------------
 # Owner-decided: 1 vCPU / 2 GB / 50 GB / 2 TB, $14/mo. sfo3 has no generic
 # s-1vcpu-2gb; sfo2 and 1 GB sizes were considered and rejected.

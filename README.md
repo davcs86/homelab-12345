@@ -26,6 +26,7 @@ ansible/
 scripts/        seed-ssh-keys.sh, ssh-agent-load.sh
 secrets/ssh/    SOPS-encrypted private keys + public keys
 .sops.yaml      age recipients (fail-closed placeholders until set)
+docs/dns.md     Route 53 records, TXT-only IAM policy (route53-acme-policy.json)
 docs/decisions.md
 ```
 
@@ -94,7 +95,7 @@ These are written together with the components they operate on:
 
 Asked and still unanswered (round 2):
 
-- **Domain:** deferred by the owner. Needed for the headscale `server_url`, the agent hostname, the MagicDNS `base_domain` and the DNS-01 provider.
+- **DNS** (domain decided: `nrdc.house` on Route 53, see [`docs/dns.md`](docs/dns.md)): confirm the hostnames `hs.`, `agent.` and `ts.`; send the hosted zone ID; choose (a) or (b) for the static records.
 - **Age public keys** (owner and CI) for `.sops.yaml`. SSH key seeding is blocked until they are in.
 - **Admin access:** `admin_username` and `bootstrap_ssh_cidrs` (the owner's current public IP as a /32).
 - **IPv6:** check the home servers. In round 2, add a reserved IPv6 that moves at cutover; until then, publish A records only (see D4a).

@@ -16,3 +16,10 @@
 # Set to [] once the node is reachable over the tailnet.
 # bootstrap_ssh_cidrs:
 #   - "203.0.113.10/32"
+
+# --- DNS (round 2; not enforced by preflight yet) ---------------------------
+# Proposed, awaiting owner confirmation (docs/dns.md):
+# headscale_hostname: "hs.{{ edge_domain }}"     # permanent: baked into every node
+# agent_hostname: "agent.{{ edge_domain }}"
+# magicdns_base_domain: "ts.{{ edge_domain }}"   # never published in public DNS
+# route53_hosted_zone_id:

@@ -118,3 +118,9 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
   - Upstream Docker and Tailscale packages exist as well.
   - Security support runs about 3 years, plus about 2 years of volunteer LTS. That is shorter than Ubuntu with ESM, and Debian has no livepatch.
 - **Conclusion:** neither changes the architecture. Footprint is the only material difference, and 50 GB of disk with 2 GB RAM absorbs it. Ubuntu stays, as the owner decided. Switching later means changing `edge_image` and the Docker repository/suite mapping, building the other colour, and cutting over. No data migration is needed beyond the normal cutover.
+
+## D9. Domain and DNS provider (Owner: `nrdc.house` on Route 53)
+
+- **Registrar and DNS:** both in Route 53, which supports registering `.house`.
+- **Credential scope:** Route 53 can limit a credential to TXT records named `_acme-challenge.*` in one zone, using the IAM condition keys `ChangeResourceRecordSetsRecordTypes` and `ChangeResourceRecordSetsNormalizedRecordNames`. That meets the "TXT-only token" requirement without delegating a separate challenge zone.
+- **Details:** see `docs/dns.md`. The hostnames and the static-record management choice are pending.
