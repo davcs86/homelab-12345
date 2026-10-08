@@ -3,12 +3,6 @@
 # fast with an explanation until each one is set by the owner. Uncomment and
 # fill in; do not invent values.
 
-# Droplet size slug. sfo3 sizes >= 25 GB root (2026-10 API):
-#   s-1vcpu-1gb-amd         1 GB / 25 GB  $7
-#   s-1vcpu-1gb-35gb-intel  1 GB / 35 GB  $8
-#   s-1vcpu-2gb-amd         2 GB / 50 GB  $14   <- recommended (RAM headroom)
-# edge_droplet_size:
-
 # Image slug: ubuntu-24-04-x64 or ubuntu-26-04-x64.
 # edge_image:
 

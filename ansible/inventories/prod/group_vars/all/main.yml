@@ -9,7 +9,14 @@ edge_name_prefix: edge                # droplets are edge-blue / edge-green
 edge_tag: homelab_edge                # firewall + inventory membership (groups: tag_homelab_edge[_blue|_green])
 edge_colors: [blue, green]
 
-# --- Droplet features (deliverable 1) --------------------------------------
+# --- Droplet (deliverable 1) ----------------------------------------------
+# Owner-decided: 1 vCPU / 2 GB / 50 GB / 2 TB, $14/mo. sfo3 has no generic
+# s-1vcpu-2gb; sfo2 and 1 GB sizes were considered and rejected.
+edge_droplet_size: s-1vcpu-2gb-amd
+
+# Owner-decided: keep IPv6 (home has native IPv6). Applied only at droplet
+# creation; changing it means building a new colour and cutting over.
+# Until a reserved IPv6 moves with cutover (round 2), publish A records only.
 edge_ipv6: true
 edge_monitoring: true                 # DO metrics agent
 edge_droplet_agent: true              # DO console agent = break-glass access once SSH is tailnet-only

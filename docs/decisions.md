@@ -19,14 +19,14 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
 - **Supervisord would be redundant.** Running `docker compose` under supervisord means two restart loops fighting each other. Running supervisord inside a container (the deleted App Platform template) hides process failures from Docker healthchecks.
 - **Supervisord's remaining place:** a small project that is not containerised can still run under supervisord on another host or in its own container. It is not on this node's critical path.
 
-## D3. Region, volume, droplet (Owner: sfo3 and the volume; size proposed)
+## D3. Region, volume, droplet (Owner)
 
 - **Region:** `sfo3`. The API confirmed on 2026-10-08 that it offers Basic sizes and block storage.
 - **Volume:** the pgBackRest repository goes on a 15 GB Block Storage volume.
   - It is independent of the droplet's lifecycle, so it survives a rebuild or a cutover.
   - It is excluded from droplet backups.
   - A full repository cannot fill the root disk that headscale's SQLite database lives on.
-- **Size:** `sfo3` does not offer the generic `s-1vcpu-2gb`; it offers only the `-amd`/`-intel` variants. The size is pending (see `pending.yml`). Recommended: `s-1vcpu-2gb-amd` (2 GB RAM, 50 GB disk, $14/mo).
+- **Size:** `s-1vcpu-2gb-amd` (1 vCPU, 2 GB RAM, 50 GB disk, 2 TB transfer, $14/mo). The owner accepted the $2/mo premium over the generic `s-1vcpu-2gb`, which `sfo3` does not offer. Rejected: moving to `sfo2` to get the generic size, and the 1 GB sizes (too little RAM for the planned stack).
 
 ## D4. Blue/green model (Proposed; implemented in a later round)
 
@@ -42,6 +42,13 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
   6. Keep the old colour for rollback, then destroy it.
 - **headscale is a single-writer SQLite service,** so blue and green are never active together. The cutover has a short control-plane write gap. Tunnels that already exist keep forwarding traffic throughout.
 - **Reserved IP:** blue/green therefore requires the reserved IP (`edge_reserved_ip_enabled: true`). A reserved IP is free while it is assigned.
+
+## D4a. IPv6 (Owner)
+
+- **Decision:** `edge_ipv6: true`. The owner's home connection has native IPv6; `curl -6` succeeded from one device.
+- **Still to check:** the home servers (Proxmox, the app VM, the backup host). The LAN or a VM bridge may not pass IPv6 through.
+- **Changing it later:** the droplet module only acts when it creates a droplet. Changing the value therefore never alters a running droplet; it takes effect when a new colour is built and cut over.
+- **Round 2:** allocate a reserved IPv6 (`digitalocean.cloud.reserved_ipv6`) and move it at cutover together with the reserved IPv4. Until then, public hostnames get **A records only, no AAAA**. Otherwise AAAA records would keep pointing at the old colour after a cutover.
 
 ## D5. Version pinning policy (Proposed)
 

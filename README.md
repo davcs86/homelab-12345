@@ -67,8 +67,11 @@ These are written together with the components they operate on:
 Asked and still unanswered (round 2):
 
 - **Domain:** deferred by the owner. Needed for the headscale `server_url`, the agent hostname, the MagicDNS `base_domain` and the DNS-01 provider.
-- **Droplet size and Ubuntu release.** The size slug must be valid in `sfo3` (see `pending.yml`).
-- **Costs:** droplet backups; reserved IP (required for blue/green).
+- **Ubuntu release:** 24.04 or 26.04. (Droplet size is decided: `s-1vcpu-2gb-amd`.)
+- **Costs:** droplet backups. The reserved IP is required for blue/green and free while attached, but the owner has not explicitly confirmed it.
+- **Admin access:** `admin_username`, `admin_ssh_public_keys`, and `bootstrap_ssh_cidrs` (the owner's current public IP as a /32).
+- **IPv6:** check the home servers. In round 2, add a reserved IPv6 that moves at cutover; until then, publish A records only (see D4a).
+- **Extra grant:** `tag:ci` → `tag:edge:22`, needed for GitHub Actions deploys.
 - **Probe stack:** Uptime Kuma or Prometheus blackbox.
 - **Policy and backups:** admin identity, OpenClaw tag, agent port, the extra grants the deliverables need, backup push or pull, the age recipient, DERP fallback, bootstrap SSH CIDR.
 - **Secrets management:** SOPS + age is proposed, not yet confirmed.
