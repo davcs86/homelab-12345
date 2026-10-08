@@ -3,21 +3,14 @@
 # fast with an explanation until each one is set by the owner. Uncomment and
 # fill in; do not invent values.
 
-# Image slug: ubuntu-24-04-x64 or ubuntu-26-04-x64.
-# edge_image:
-
-# Weekly DO droplet backups (+20% of droplet price). true | false
-# edge_droplet_backups:
-
-# Reserved IPv4 (free while assigned). Required for blue/green cutover.
-# edge_reserved_ip_enabled:
 # After the first provision, record the allocated address here:
 # edge_reserved_ip:
 
-# Non-root sudo user and its SSH public key(s).
+# Non-root sudo user name.
 # admin_username:
-# admin_ssh_public_keys:
-#   - "ssh-ed25519 AAAA... comment"
+
+# admin_ssh_public_keys is NOT set here: `make seed-ssh-keys` generates it in
+# group_vars/all/ssh_public_keys.yml (private halves SOPS-encrypted in secrets/ssh/).
 
 # Source CIDRs allowed to reach public 22/tcp during bootstrap ONLY.
 # Set to [] once the node is reachable over the tailnet.

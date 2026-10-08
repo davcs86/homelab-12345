@@ -14,6 +14,16 @@ edge_colors: [blue, green]
 # s-1vcpu-2gb; sfo2 and 1 GB sizes were considered and rejected.
 edge_droplet_size: s-1vcpu-2gb-amd
 
+# Owner-decided: Ubuntu 24.04 LTS (see docs/decisions.md D8 for the Debian comparison).
+edge_image: ubuntu-24-04-x64
+
+# Owner-decided: no DO droplet backups. The node is rebuilt from code; headscale
+# state has its own encrypted nightly backup; the data volume is never in droplet backups.
+edge_droplet_backups: false
+
+# Owner-decided: reserved IPv4 on (free while assigned; required for blue/green).
+edge_reserved_ip_enabled: true
+
 # Owner-decided: keep IPv6 (home has native IPv6). Applied only at droplet
 # creation; changing it means building a new colour and cutting over.
 # Until a reserved IPv6 moves with cutover (round 2), publish A records only.

@@ -1,0 +1,11 @@
+---
+# SOPS creation rules. Every encrypted file is readable by each age recipient
+# listed here. Private age identities NEVER enter this repository.
+#
+# FAIL-CLOSED: until the owner supplies real age public keys, the placeholders
+# below are not valid recipients and every `sops --encrypt` aborts.
+creation_rules:
+  - path_regex: ^(secrets/.*|ansible/inventories/.*\.sops\.ya?ml)$
+    age: >-
+      REPLACE_WITH_OWNER_AGE_PUBLIC_KEY,
+      REPLACE_WITH_CI_AGE_PUBLIC_KEY

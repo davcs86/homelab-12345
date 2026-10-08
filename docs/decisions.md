@@ -19,7 +19,7 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
 - **Supervisord would be redundant.** Running `docker compose` under supervisord means two restart loops fighting each other. Running supervisord inside a container (the deleted App Platform template) hides process failures from Docker healthchecks.
 - **Supervisord's remaining place:** a small project that is not containerised can still run under supervisord on another host or in its own container. It is not on this node's critical path.
 
-## D3. Region, volume, droplet (Owner)
+## D3. Region, volume, droplet, image, backups, reserved IP (Owner)
 
 - **Region:** `sfo3`. The API confirmed on 2026-10-08 that it offers Basic sizes and block storage.
 - **Volume:** the pgBackRest repository goes on a 15 GB Block Storage volume.
@@ -27,6 +27,9 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
   - It is excluded from droplet backups.
   - A full repository cannot fill the root disk that headscale's SQLite database lives on.
 - **Size:** `s-1vcpu-2gb-amd` (1 vCPU, 2 GB RAM, 50 GB disk, 2 TB transfer, $14/mo). The owner accepted the $2/mo premium over the generic `s-1vcpu-2gb`, which `sfo3` does not offer. Rejected: moving to `sfo2` to get the generic size, and the 1 GB sizes (too little RAM for the planned stack).
+- **Image:** `ubuntu-24-04-x64` (see D8).
+- **Droplet backups:** off. The node is rebuilt from code, headscale state has its own encrypted nightly backup, and volumes are never included in droplet backups anyway.
+- **Reserved IPv4:** on. It is free while assigned and blue/green requires it.
 
 ## D4. Blue/green model (Proposed; implemented in a later round)
 
@@ -76,3 +79,42 @@ The target is a DigitalOcean droplet, deployed from GitHub Actions with blue/gre
 - **fail2ban:** sshd jail on the systemd backend using nftables. The tailnet ranges are never banned.
 - **chrony:** used for time sync, with the host on UTC.
 - **Docker daemon:** `local` log driver capped at 3 × 10 MB per container, `live-restore`, `no-new-privileges`, `icc=false`, no userland proxy.
+
+## D7. Secrets: SOPS + age (Owner)
+
+- **Tool:** sops 3.13.3. `make deps` installs it into `.venv/bin` and verifies its per-platform SHA-256 against the upstream checksums file.
+- **Recipients** are set in `.sops.yaml`. There are two age recipients:
+  - **Owner:** an age identity generated on the owner's machine. It never leaves that machine.
+  - **CI:** an age identity whose private half is stored only as a GitHub Actions secret (`SOPS_AGE_KEY`), for the round-2 deploy workflow.
+
+  The file **fails closed**: while it still holds placeholder recipients, every encrypt aborts and `seed-ssh-keys.sh` refuses to run.
+- **Ansible:** reads `*.sops.yml` group/host vars transparently through `community.sops.sops` (2.5.0), which is enabled in `ansible.cfg`.
+- **SSH keys:** `scripts/seed-ssh-keys.sh` generates the ed25519 keys (`-a 100`).
+  - **`operator`** is for humans; **`ci`** is for GitHub Actions. They are separate so either can be revoked on its own.
+  - The plaintext private key exists only in a 0700 tmpfs directory while it is encrypted; it is shredded on exit.
+  - Every key is checked by decrypting it and re-deriving its public key before the script trusts the encrypted copy.
+  - Existing keys are never overwritten.
+  - Public keys are generated into `group_vars/all/ssh_public_keys.yml`.
+  - `scripts/ssh-agent-load.sh` decrypts a key straight into `ssh-agent` with a lifetime. Plaintext never touches disk.
+- **Why the owner must generate the age identity:** whoever holds it can decrypt every secret in the repository. If it were generated in a cloud session, it would have to be sent through that session, and would then exist outside the owner's control.
+- **Verified in a throwaway copy with throwaway age identities:**
+  - Generation is idempotent, and no plaintext key is left on disk or in tmpfs.
+  - The owner identity and the CI identity can each decrypt independently.
+  - A foreign identity is refused.
+  - `ssh-agent` loading works.
+  - Ansible decrypts a `*.sops.yml` var.
+  - The placeholder guard works.
+
+## D8. OS: Ubuntu 24.04 LTS (Owner), Debian 13 considered
+
+- **Ubuntu 24.04 (`ubuntu-24-04-x64`):**
+  - Standard security support until 2029-05; ESM until 2034 through the free Ubuntu Pro personal tier.
+  - It is DigitalOcean's most-tested image for the metrics and droplet agents.
+  - It has upstream Docker and Tailscale packages.
+  - Livepatch is available through Pro.
+- **Debian 13 (`debian-13-x64`, available in `sfo3`):**
+  - Smaller base install: no snapd and no Ubuntu Pro/MOTD tooling. That saves roughly a few hundred MB of disk and some idle RAM.
+  - A more conservative release cadence.
+  - Upstream Docker and Tailscale packages exist as well.
+  - Security support runs about 3 years, plus about 2 years of volunteer LTS. That is shorter than Ubuntu with ESM, and Debian has no livepatch.
+- **Conclusion:** neither changes the architecture. Footprint is the only material difference, and 50 GB of disk with 2 GB RAM absorbs it. Ubuntu stays, as the owner decided. Switching later means changing `edge_image` and the Docker repository/suite mapping, building the other colour, and cutting over. No data migration is needed beyond the normal cutover.
