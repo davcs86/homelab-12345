@@ -1,0 +1,10 @@
+---
+# Create/converge DigitalOcean resources for one colour.
+#   ansible-playbook playbooks/provision.yml -e edge_color=blue
+- name: Provision edge droplet and shared DigitalOcean resources
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - preflight
+    - do_edge

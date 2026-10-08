@@ -1,0 +1,28 @@
+---
+# The volume is attached to exactly one colour at a time. On the standby
+# colour it is absent and this role is a no-op; cutover attaches and mounts it.
+- name: Check whether the data volume is attached here
+  ansible.builtin.stat:
+    path: "{{ data_volume_device }}"
+  register: data_volume_stat
+
+- name: Mount data volume
+  when: data_volume_stat.stat.exists
+  block:
+    - name: Read filesystem UUID
+      ansible.builtin.command: blkid -s UUID -o value {{ data_volume_device }}
+      register: data_volume_uuid
+      changed_when: false
+
+    - name: Mount by UUID (nofail so a detached volume never blocks boot)
+      ansible.posix.mount:
+        path: "{{ edge_data_volume_mountpoint }}"
+        src: "UUID={{ data_volume_uuid.stdout }}"
+        fstype: "{{ edge_data_volume_fs }}"
+        opts: defaults,nofail,noatime,discard,x-systemd.device-timeout=10s
+        state: mounted
+
+- name: Report standby state
+  ansible.builtin.debug:
+    msg: "Data volume not attached to this droplet (standby colour); skipping mount."
+  when: not data_volume_stat.stat.exists

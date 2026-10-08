@@ -1,0 +1,198 @@
+---
+# Provisions one colour (blue|green) of the edge node plus the shared,
+# colour-independent resources (firewall, data volume, reserved IP).
+# Shared resources are only *attached* when free; moving them between colours
+# is the job of the cutover playbook, never of provisioning.
+
+- name: Assert DigitalOcean token is present in the environment
+  ansible.builtin.assert:
+    that: do_edge_token | length > 0
+    fail_msg: "DIGITALOCEAN_TOKEN is not set in the environment."
+    quiet: true
+
+# --- SSH keys (root bootstrap only; root login is disabled by the base role)
+- name: Register admin SSH public keys with DigitalOcean
+  digitalocean.cloud.ssh_key:
+    state: present
+    name: "{{ admin_username }}-{{ idx }}"
+    public_key: "{{ item }}"
+  loop: "{{ admin_ssh_public_keys }}"
+  loop_control:
+    index_var: idx
+    label: "{{ admin_username }}-{{ idx }}"
+  register: do_edge_ssh_keys
+
+# --- Droplet ----------------------------------------------------------------
+- name: Ensure droplet exists
+  digitalocean.cloud.droplet:
+    state: present
+    name: "{{ do_edge_droplet_name }}"
+    unique_name: true
+    region: "{{ edge_region }}"
+    size: "{{ edge_droplet_size }}"
+    image: "{{ edge_image }}"
+    ssh_keys: "{{ do_edge_ssh_keys.results | map(attribute='ssh_key') | map(attribute='fingerprint') | list }}"
+    backups: "{{ edge_droplet_backups }}"
+    ipv6: "{{ edge_ipv6 }}"
+    monitoring: "{{ edge_monitoring }}"
+    with_droplet_agent: "{{ edge_droplet_agent }}"
+    tags:
+      - "{{ edge_tag }}"
+      - "{{ edge_tag }}-{{ edge_color }}"
+  register: do_edge_droplet_res
+
+- name: Record droplet facts
+  ansible.builtin.set_fact:
+    do_edge_droplet_id: "{{ do_edge_droplet_res.droplet.id }}"
+    do_edge_droplet_ipv4: >-
+      {{ do_edge_droplet_res.droplet.networks.v4 | selectattr('type', 'eq', 'public')
+         | map(attribute='ip_address') | first }}
+
+# --- Cloud Firewall (managed via API: the collection module cannot update) ---
+- name: Build desired firewall spec
+  ansible.builtin.set_fact:
+    do_edge_fw_desired:
+      name: "{{ edge_firewall_name }}"
+      tags: ["{{ edge_tag }}"]
+      inbound_rules: "{{ do_edge_public_in + do_edge_ssh_in }}"
+      outbound_rules: "{{ edge_firewall_outbound | map('combine', {'destinations': do_edge_anywhere}) | list }}"
+  vars:
+    do_edge_anywhere: {addresses: ["0.0.0.0/0", "::/0"]}
+    do_edge_public_in: "{{ edge_firewall_public_inbound | map('combine', {'sources': do_edge_anywhere}) | list }}"
+    do_edge_ssh_in: >-
+      {{ [{'protocol': 'tcp', 'ports': '22', 'sources': {'addresses': bootstrap_ssh_cidrs}}]
+         if bootstrap_ssh_cidrs | length > 0 else [] }}
+
+- name: List firewalls
+  ansible.builtin.uri:
+    url: "{{ do_edge_api }}/firewalls?per_page=200"
+    headers: {Authorization: "Bearer {{ do_edge_token }}"}
+    return_content: true
+  register: do_edge_fw_list
+  no_log: true
+  failed_when: false
+
+- name: Assert firewall listing succeeded
+  ansible.builtin.assert:
+    that: do_edge_fw_list.status == 200
+    fail_msg: "GET /firewalls returned HTTP {{ do_edge_fw_list.status }}"
+    quiet: true
+
+- name: Select existing firewall
+  ansible.builtin.set_fact:
+    do_edge_fw_live: "{{ do_edge_fw_list.json.firewalls | selectattr('name', 'eq', edge_firewall_name) | list }}"
+
+- name: Assert firewall name is unique
+  ansible.builtin.assert:
+    that: do_edge_fw_live | length <= 1
+    fail_msg: "More than one firewall named {{ edge_firewall_name }}; resolve manually."
+    quiet: true
+
+- name: Create or update firewall
+  ansible.builtin.uri:
+    url: "{{ do_edge_api }}/firewalls{{ ('/' ~ do_edge_fw_live[0].id) if do_edge_fw_live else '' }}"
+    method: "{{ 'PUT' if do_edge_fw_live else 'POST' }}"
+    headers: {Authorization: "Bearer {{ do_edge_token }}"}
+    body_format: json
+    body: "{{ do_edge_fw_desired }}"
+    status_code: [200, 202]
+  when: >-
+    not do_edge_fw_live or
+    (do_edge_fw_live[0] | do_firewall_normalize) != (do_edge_fw_desired | do_firewall_normalize)
+  changed_when: true
+  no_log: true
+  register: do_edge_fw_write
+
+- name: Report public SSH exposure
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'WARNING: public 22/tcp is OPEN to ' ~ (bootstrap_ssh_cidrs | join(', '))
+         ~ '. Set bootstrap_ssh_cidrs: [] and re-run once tailnet SSH works.'
+         if bootstrap_ssh_cidrs | length > 0 else 'Public 22/tcp is closed.' }}
+
+# --- pgBackRest data volume --------------------------------------------------
+- name: Ensure data volume exists
+  digitalocean.cloud.volume:
+    state: present
+    name: "{{ edge_data_volume_name }}"
+    region: "{{ edge_region }}"
+    size_gigabytes: "{{ edge_data_volume_size_gb }}"
+    filesystem_type: "{{ edge_data_volume_fs }}"
+    filesystem_label: "{{ edge_data_volume_name[:16] }}"
+    description: "Offsite pgBackRest repository (homelab)"
+    tags: ["{{ edge_tag }}"]
+  register: do_edge_volume
+
+- name: Attach data volume when it is not attached anywhere
+  digitalocean.cloud.volume_action:
+    state: present
+    volume_name: "{{ edge_data_volume_name }}"
+    droplet_name: "{{ do_edge_droplet_name }}"
+    region: "{{ edge_region }}"
+  when: do_edge_volume.volume.droplet_ids | default([]) | length == 0
+
+- name: Report data volume ownership
+  ansible.builtin.debug:
+    msg: >-
+      Data volume is attached to droplet(s) {{ do_edge_volume.volume.droplet_ids }};
+      it moves to {{ do_edge_droplet_name }} only during cutover.
+  when:
+    - do_edge_volume.volume.droplet_ids | default([]) | length > 0
+    - do_edge_droplet_id | int not in do_edge_volume.volume.droplet_ids
+
+# --- Reserved IPv4 -----------------------------------------------------------
+- name: Reserved IP
+  when: edge_reserved_ip_enabled | bool
+  block:
+    - name: List edge droplets
+      ansible.builtin.uri:
+        url: "{{ do_edge_api }}/droplets?tag_name={{ edge_tag }}&per_page=200"
+        headers: {Authorization: "Bearer {{ do_edge_token }}"}
+      register: do_edge_droplets
+      no_log: true
+      failed_when: false
+
+    - name: Refuse to allocate a second reserved IP
+      ansible.builtin.assert:
+        that:
+          - do_edge_droplets.status == 200
+          - >-
+            (edge_reserved_ip is defined and edge_reserved_ip is not none) or
+            (do_edge_droplets.json.droplets | rejectattr('id', 'eq', do_edge_droplet_id | int) | list | length == 0)
+        fail_msg: >-
+          Another edge droplet exists but edge_reserved_ip is not recorded.
+          Record the existing reserved IP in pending.yml before provisioning a second colour.
+        quiet: true
+
+    - name: Allocate reserved IP (first deployment only)
+      digitalocean.cloud.reserved_ip:
+        state: present
+        droplet_id: "{{ do_edge_droplet_id | int }}"
+      register: do_edge_rip_new
+      when: edge_reserved_ip is not defined or edge_reserved_ip is none
+
+    - name: Tell operator to record the reserved IP
+      ansible.builtin.debug:
+        msg: >-
+          Record edge_reserved_ip: {{ do_edge_rip_new.reserved_ip.ip }}
+          in group_vars/all/pending.yml and commit it.
+      when: do_edge_rip_new is not skipped
+
+    - name: Read recorded reserved IP
+      ansible.builtin.uri:
+        url: "{{ do_edge_api }}/reserved_ips/{{ edge_reserved_ip }}"
+        headers: {Authorization: "Bearer {{ do_edge_token }}"}
+      register: do_edge_rip
+      no_log: true
+      failed_when: false
+      when: edge_reserved_ip is defined and edge_reserved_ip is not none
+
+    - name: Assign recorded reserved IP when it is free
+      digitalocean.cloud.reserved_ip_assign:
+        state: present
+        reserved_ip: "{{ edge_reserved_ip }}"
+        droplet_id: "{{ do_edge_droplet_id | int }}"
+      when:
+        - do_edge_rip is not skipped
+        - do_edge_rip.status == 200
+        - do_edge_rip.json.reserved_ip.droplet is none

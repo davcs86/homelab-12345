@@ -1,0 +1,25 @@
+---
+# UNDECIDED VALUES. Intentionally left undefined: the preflight role fails
+# fast with an explanation until each one is set by the owner. Uncomment and
+# fill in; do not invent values.
+
+# After the first provision, record the allocated address here:
+# edge_reserved_ip:
+
+# Non-root sudo user name.
+# admin_username:
+
+# admin_ssh_public_keys is NOT set here: `make seed-ssh-keys` generates it in
+# group_vars/all/ssh_public_keys.yml (private halves SOPS-encrypted in secrets/ssh/).
+
+# Source CIDRs allowed to reach public 22/tcp during bootstrap ONLY.
+# Set to [] once the node is reachable over the tailnet.
+# bootstrap_ssh_cidrs:
+#   - "203.0.113.10/32"
+
+# --- DNS (round 2; not enforced by preflight yet) ---------------------------
+# Proposed, awaiting owner confirmation (docs/dns.md):
+# headscale_hostname: "hs.{{ edge_domain }}"     # permanent: baked into every node
+# agent_hostname: "agent.{{ edge_domain }}"
+# magicdns_base_domain: "ts.{{ edge_domain }}"   # never published in public DNS
+# route53_hosted_zone_id:

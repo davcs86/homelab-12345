@@ -1,0 +1,25 @@
+---
+# Converge OS hardening, Docker and the data volume on one colour.
+#   ansible-playbook playbooks/site.yml -e edge_color=blue
+- name: Preflight
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - preflight
+
+- name: Converge edge host
+  hosts: "tag_homelab_edge_{{ edge_color | default('UNSET') }}"
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Assert supported OS
+      ansible.builtin.assert:
+        that:
+          - ansible_facts['distribution'] == 'Ubuntu'
+          - ansible_facts['distribution_version'] in ['24.04', '26.04']
+        quiet: true
+  roles:
+    - base
+    - docker
+    - data_volume

@@ -1,0 +1,66 @@
+---
+# Decided values. Every entry here was either stated by the owner or is a
+# technical default documented in docs/decisions.md. Undecided values live in
+# pending.yml and are enforced by the preflight role.
+
+# --- Topology --------------------------------------------------------------
+edge_region: sfo3                     # owner-confirmed (closest to Hayward, CA)
+edge_name_prefix: edge                # droplets are edge-blue / edge-green
+edge_tag: homelab_edge                # firewall + inventory membership (groups: tag_homelab_edge[_blue|_green])
+edge_colors: [blue, green]
+
+# --- DNS ------------------------------------------------------------------
+# Owner-decided: apex domain, registered and hosted in AWS Route 53.
+# Records, IAM scope and hostname rules: docs/dns.md.
+edge_domain: nrdc.house
+
+# --- Droplet (deliverable 1) ----------------------------------------------
+# Owner-decided: 1 vCPU / 2 GB / 50 GB / 2 TB, $14/mo. sfo3 has no generic
+# s-1vcpu-2gb; sfo2 and 1 GB sizes were considered and rejected.
+edge_droplet_size: s-1vcpu-2gb-amd
+
+# Owner-decided: Ubuntu 24.04 LTS (see docs/decisions.md D8 for the Debian comparison).
+edge_image: ubuntu-24-04-x64
+
+# Owner-decided: no DO droplet backups. The node is rebuilt from code; headscale
+# state has its own encrypted nightly backup; the data volume is never in droplet backups.
+edge_droplet_backups: false
+
+# Owner-decided: reserved IPv4 on (free while assigned; required for blue/green).
+edge_reserved_ip_enabled: true
+
+# Owner-decided: keep IPv6 (home has native IPv6). Applied only at droplet
+# creation; changing it means building a new colour and cutting over.
+# Until a reserved IPv6 moves with cutover (round 2), publish A records only.
+edge_ipv6: true
+edge_monitoring: true                 # DO metrics agent
+edge_droplet_agent: true              # DO console agent = break-glass access once SSH is tailnet-only
+
+# --- pgBackRest repo volume (owner-approved alternative) -------------------
+# Kept off the root disk so it survives a droplet rebuild / blue-green cutover
+# and is excluded from droplet backups.
+edge_data_volume_name: pgbackrest-repo
+edge_data_volume_size_gb: 15          # owner budget for the pgBackRest repo
+edge_data_volume_fs: ext4
+edge_data_volume_mountpoint: /srv/pgbackrest
+
+# --- Cloud Firewall (deliverable 2) ----------------------------------------
+edge_firewall_name: homelab-edge
+edge_firewall_public_inbound:
+  - {protocol: tcp, ports: "80"}      # ACME redirect / HTTP->HTTPS
+  - {protocol: tcp, ports: "443"}     # Caddy: headscale + public /agent
+  - {protocol: udp, ports: "3478"}    # embedded DERP STUN
+# DO Cloud Firewalls deny all egress unless rules exist. Tailscale needs
+# arbitrary UDP egress for NAT traversal, so egress is open.
+edge_firewall_outbound:
+  - {protocol: tcp, ports: "0"}
+  - {protocol: udp, ports: "0"}
+  - {protocol: icmp}
+
+# --- Docker Engine (deliverable 4) -----------------------------------------
+# Upstream versions; the apt suffix (~ubuntu.<ver>~<codename>) is derived from
+# the host facts so the same pin works on 24.04 and 26.04.
+docker_ce_version: "5:29.8.2-1"       # latest stable in download.docker.com at authoring time
+containerd_version: "2.3.6-1"
+docker_compose_plugin_version: "5.6.0-1"
+docker_buildx_plugin_version: "0.38.0-1"

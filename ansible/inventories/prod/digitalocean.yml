@@ -1,0 +1,22 @@
+---
+# Dynamic inventory. Every droplet carrying the `homelab_edge` tag is a member;
+# blue/green colour is a second tag, so groups are `tag_homelab_edge`,
+# `tag_homelab_edge_blue` and `tag_homelab_edge_green`.
+# Token comes from DIGITALOCEAN_TOKEN in the environment, never from the repo.
+plugin: digitalocean.cloud.droplets
+attributes:
+  - id
+  - name
+  - networks
+  - region
+  - size_slug
+  - tags
+  - volume_ids
+filters:
+  - '"homelab_edge" in do_tags'
+compose:
+  ansible_host: networks.v4 | selectattr("type", "eq", "public") | map(attribute="ip_address") | first
+keyed_groups:
+  - key: do_tags
+    prefix: tag
+    separator: "_"

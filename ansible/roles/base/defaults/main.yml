@@ -1,0 +1,28 @@
+---
+# Distro packages track the Ubuntu LTS security pocket (not version-pinned):
+# pinning them would defeat unattended security upgrades. See docs/decisions.md.
+# Set true only by playbooks/bootstrap.yml (first login as root).
+base_bootstrap: false
+
+base_packages:
+  - chrony
+  - nftables             # fail2ban banaction
+  - fail2ban
+  - unattended-upgrades
+  - needrestart
+  - python3-systemd        # fail2ban systemd backend
+
+# journald: hard caps so logs can never starve headscale/pgBackRest of disk.
+base_journald_system_max_use: 300M
+base_journald_system_keep_free: 2G
+base_journald_max_retention: 1month
+
+# fail2ban (sshd). 100.64.0.0/10 is the tailnet CGNAT range; never ban admins there.
+base_fail2ban_bantime: 1h
+base_fail2ban_findtime: 10m
+base_fail2ban_maxretry: 5
+base_fail2ban_ignoreip: ["127.0.0.1/8", "::1", "100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+
+# Unattended upgrades: security pocket only, no automatic reboot (single
+# control-plane node; reboots are an operator / blue-green decision).
+base_unattended_automatic_reboot: false
