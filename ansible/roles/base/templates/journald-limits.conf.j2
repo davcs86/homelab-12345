@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+[Journal]
+Storage=persistent
+Compress=yes
+SystemMaxUse={{ base_journald_system_max_use }}
+SystemKeepFree={{ base_journald_system_keep_free }}
+MaxRetentionSec={{ base_journald_max_retention }}

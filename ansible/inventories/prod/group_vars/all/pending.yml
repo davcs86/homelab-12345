@@ -1,0 +1,31 @@
+---
+# UNDECIDED VALUES. Intentionally left undefined: the preflight role fails
+# fast with an explanation until each one is set by the owner. Uncomment and
+# fill in; do not invent values.
+
+# Droplet size slug. sfo3 sizes >= 25 GB root (2026-10 API):
+#   s-1vcpu-1gb-amd         1 GB / 25 GB  $7
+#   s-1vcpu-1gb-35gb-intel  1 GB / 35 GB  $8
+#   s-1vcpu-2gb-amd         2 GB / 50 GB  $14   <- recommended (RAM headroom)
+# edge_droplet_size:
+
+# Image slug: ubuntu-24-04-x64 or ubuntu-26-04-x64.
+# edge_image:
+
+# Weekly DO droplet backups (+20% of droplet price). true | false
+# edge_droplet_backups:
+
+# Reserved IPv4 (free while assigned). Required for blue/green cutover.
+# edge_reserved_ip_enabled:
+# After the first provision, record the allocated address here:
+# edge_reserved_ip:
+
+# Non-root sudo user and its SSH public key(s).
+# admin_username:
+# admin_ssh_public_keys:
+#   - "ssh-ed25519 AAAA... comment"
+
+# Source CIDRs allowed to reach public 22/tcp during bootstrap ONLY.
+# Set to [] once the node is reachable over the tailnet.
+# bootstrap_ssh_cidrs:
+#   - "203.0.113.10/32"

@@ -1,0 +1,10 @@
+---
+preflight_require_color: true
+preflight_required_vars:
+  - edge_droplet_size
+  - edge_image
+  - edge_droplet_backups
+  - edge_reserved_ip_enabled
+  - admin_username
+  - admin_ssh_public_keys
+  - bootstrap_ssh_cidrs

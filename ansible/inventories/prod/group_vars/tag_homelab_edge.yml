@@ -1,0 +1,5 @@
+---
+# Connection settings for edge droplets only (not the implicit localhost).
+# Trust-on-first-use for new droplets; a CHANGED host key still fails hard.
+ansible_ssh_common_args: "-o StrictHostKeyChecking=accept-new"
+ansible_user: "{{ admin_username }}"

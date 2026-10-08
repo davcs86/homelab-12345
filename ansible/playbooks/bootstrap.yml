@@ -1,0 +1,28 @@
+---
+# First login to a freshly created droplet, as root, exactly once.
+# Creates the admin user and disables root/password SSH. All later runs use
+# playbooks/site.yml as the admin user.
+#   ansible-playbook playbooks/bootstrap.yml -e edge_color=blue
+- name: Preflight
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - preflight
+
+- name: Bootstrap admin access
+  hosts: "tag_homelab_edge_{{ edge_color | default('UNSET') }}"
+  remote_user: root
+  gather_facts: true
+  vars:
+    ansible_user: root
+    base_bootstrap: true
+  tasks:
+    - name: Admin user
+      ansible.builtin.import_role:
+        name: base
+        tasks_from: user.yml
+    - name: SSH hardening
+      ansible.builtin.import_role:
+        name: base
+        tasks_from: ssh.yml

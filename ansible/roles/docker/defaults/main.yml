@@ -1,0 +1,35 @@
+---
+# Docker's apt signing key, pinned two ways: file checksum and fingerprint.
+docker_apt_key_url: https://download.docker.com/linux/ubuntu/gpg
+docker_apt_key_sha256: 1500c1f56fa9e26b9b8f42452a553675796ade0807cdce11975eb98170b3a570
+docker_apt_key_fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+# Debian-style package suffix for the running release, e.g.
+# 5:29.8.2-1~ubuntu.24.04~noble
+docker_pkg_suffix: "~ubuntu.{{ ansible_facts['distribution_version'] }}~{{ ansible_facts['distribution_release'] }}"
+docker_packages:
+  - "docker-ce={{ docker_ce_version }}{{ docker_pkg_suffix }}"
+  - "docker-ce-cli={{ docker_ce_version }}{{ docker_pkg_suffix }}"
+  - "containerd.io={{ containerd_version }}{{ docker_pkg_suffix }}"
+  - "docker-compose-plugin={{ docker_compose_plugin_version }}{{ docker_pkg_suffix }}"
+  - "docker-buildx-plugin={{ docker_buildx_plugin_version }}{{ docker_pkg_suffix }}"
+
+# Distro packages that conflict with docker-ce.
+docker_conflicting_packages:
+  - docker.io
+  - docker-doc
+  - docker-compose
+  - docker-compose-v2
+  - podman-docker
+  - containerd
+  - runc
+
+docker_daemon_config:
+  log-driver: local             # compressed, size-capped, rotation built in
+  log-opts:
+    max-size: 10m
+    max-file: "3"
+  live-restore: true            # dockerd upgrades/restarts keep containers running
+  userland-proxy: false
+  no-new-privileges: true
+  icc: false                    # default bridge only; compose networks unaffected

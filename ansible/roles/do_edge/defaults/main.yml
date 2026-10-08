@@ -1,0 +1,5 @@
+---
+do_edge_api: https://api.digitalocean.com/v2
+# Read from the environment at runtime only; never committed, never logged.
+do_edge_token: "{{ lookup('ansible.builtin.env', 'DIGITALOCEAN_TOKEN') }}"
+do_edge_droplet_name: "{{ edge_name_prefix }}-{{ edge_color }}"

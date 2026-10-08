@@ -1,0 +1,12 @@
+---
+# chrony replaces systemd-timesyncd (they conflict); chrony slews safely and
+# exposes tracking state for monitoring.
+- name: Ensure chrony is enabled and running
+  ansible.builtin.systemd_service:
+    name: chrony
+    enabled: true
+    state: started
+
+- name: Set timezone to UTC
+  community.general.timezone:
+    name: Etc/UTC

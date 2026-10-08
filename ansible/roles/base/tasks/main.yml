@@ -1,0 +1,15 @@
+---
+- name: Admin user
+  ansible.builtin.import_tasks: user.yml
+- name: SSH hardening
+  ansible.builtin.import_tasks: ssh.yml
+- name: Packages
+  ansible.builtin.import_tasks: packages.yml
+- name: Time sync
+  ansible.builtin.import_tasks: time.yml
+- name: Journald limits
+  ansible.builtin.import_tasks: journald.yml
+- name: Unattended security upgrades
+  ansible.builtin.import_tasks: unattended.yml
+- name: Fail2ban
+  ansible.builtin.import_tasks: fail2ban.yml

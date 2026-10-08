@@ -1,0 +1,2 @@
+---
+data_volume_device: "/dev/disk/by-id/scsi-0DO_Volume_{{ edge_data_volume_name }}"

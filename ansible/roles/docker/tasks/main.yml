@@ -1,0 +1,74 @@
+---
+- name: Remove conflicting distro container packages
+  ansible.builtin.apt:
+    name: "{{ docker_conflicting_packages }}"
+    state: absent
+
+- name: Ensure apt keyrings directory exists
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: "0755"
+
+- name: Download Docker apt signing key (checksum-pinned)
+  ansible.builtin.get_url:
+    url: "{{ docker_apt_key_url }}"
+    dest: /etc/apt/keyrings/docker.asc
+    checksum: "sha256:{{ docker_apt_key_sha256 }}"
+    mode: "0644"
+
+- name: Read Docker key fingerprint
+  ansible.builtin.command: gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc
+  register: _docker_key
+  changed_when: false
+
+- name: Assert Docker key fingerprint
+  ansible.builtin.assert:
+    that: ("fpr:::::::::" ~ docker_apt_key_fingerprint ~ ":") in _docker_key.stdout_lines
+    fail_msg: Docker apt key fingerprint mismatch; refusing to trust the repository.
+    quiet: true
+
+- name: Configure Docker apt repository
+  ansible.builtin.deb822_repository:
+    name: docker
+    types: [deb]
+    uris: https://download.docker.com/linux/ubuntu
+    suites: ["{{ ansible_facts['distribution_release'] }}"]
+    components: [stable]
+    architectures: [amd64]
+    signed_by: /etc/apt/keyrings/docker.asc
+
+- name: Release apt holds so pinned versions can be (re)applied
+  ansible.builtin.dpkg_selections:
+    name: "{{ item.split('=')[0] }}"
+    selection: install
+  loop: "{{ docker_packages }}"
+  changed_when: false
+  failed_when: false
+
+- name: Install pinned Docker packages
+  ansible.builtin.apt:
+    name: "{{ docker_packages }}"
+    state: present
+    update_cache: true
+    allow_downgrade: true
+  notify: Restart docker
+
+- name: Hold Docker packages at the pinned version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item.split('=')[0] }}"
+    selection: hold
+  loop: "{{ docker_packages }}"
+
+- name: Configure Docker daemon
+  ansible.builtin.copy:
+    dest: /etc/docker/daemon.json
+    content: "{{ docker_daemon_config | to_nice_json }}\n"
+    mode: "0644"
+  notify: Restart docker
+
+- name: Ensure Docker is enabled and running
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started

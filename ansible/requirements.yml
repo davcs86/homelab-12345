@@ -1,0 +1,11 @@
+---
+# Exact collection pins; bump via PR only.
+collections:
+  # Official DigitalOcean collection (pydo based). community.digitalocean has
+  # had no release since 2024-08 and is not used.
+  - name: digitalocean.cloud
+    version: "1.9.0"
+  - name: ansible.posix
+    version: "2.2.2"
+  - name: community.general
+    version: "13.5.0"

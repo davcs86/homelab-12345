@@ -1,0 +1,25 @@
+---
+- name: Create admin user
+  ansible.builtin.user:
+    name: "{{ admin_username }}"
+    shell: /bin/bash
+    groups: [sudo]
+    append: true
+    password: "!"               # locked password; key-only access
+    update_password: on_create
+
+- name: Install admin authorized keys (exclusive)
+  ansible.posix.authorized_key:
+    user: "{{ admin_username }}"
+    key: "{{ admin_ssh_public_keys | join('\n') }}"
+    exclusive: true
+
+# The account has no usable password, so sudo must not prompt for one.
+- name: Passwordless sudo for admin user
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ admin_username }}"
+    content: "{{ admin_username }} ALL=(ALL:ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
