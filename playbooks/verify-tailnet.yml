@@ -92,9 +92,11 @@
           ansible.builtin.shell: |
             set -o pipefail
             echo "## host file"; cat {{ edge_root }}/headscale/extra-records.json
-            echo "## inside headscale"; docker compose -f {{ edge_root }}/compose.yml exec -T headscale cat /etc/headscale/extra-records.json
             echo "## headscale log"; docker compose -f {{ edge_root }}/compose.yml logs --no-color headscale 2>&1 | grep -i 'extra' | tail -n 10
             echo "## test node DNS"; docker exec {{ _node }} tailscale dns status --all
+            echo "## node resolver, no network path"; docker exec {{ _node }} tailscale dns query {{ public_app_hostname }} A
+            echo "## node routing for 100.100.100.100"; docker exec {{ _node }} sh -c 'ip rule; ip route get 100.100.100.100; ip route show table 52'
+            echo "## in-domain name via 100.100.100.100"; docker exec {{ _node }} nslookup {{ status_hostname }} 100.100.100.100
           args:
             executable: /bin/bash
           register: _dns_evidence

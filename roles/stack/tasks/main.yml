@@ -133,28 +133,45 @@
   loop: "{{ headscale_users | difference(_hs_users.stdout | from_json | map(attribute='name') | list) }}"
   changed_when: true
 
-- name: Headscale over HTTPS, with ACME diagnostics on failure
+- name: Publicly trusted certificates for every site, with ACME diagnostics on failure
+  vars:
+    # One SNI per certificate Caddy manages; status.* is served by the *.{{ magicdns_base_domain }} wildcard.
+    _cert_check: "{{ playbook_dir }}/../scripts/tls-check.py {{ headscale_hostname }} {{ public_app_hostname }} {{ status_hostname }}"
   block:
-    - name: Probe for an existing certificate  # noqa: command-instead-of-module
-      ansible.builtin.command: >-
-        curl -fsS --max-time 10
-        --resolve {{ headscale_hostname }}:443:127.0.0.1 https://{{ headscale_hostname }}/health
-      register: _hs_probe
+    - name: Probe the certificates
+      ansible.builtin.script:
+        cmd: "{{ _cert_check }}"
+        executable: python3
+      register: _cert_probe
       changed_when: false
       failed_when: false
 
     # A reload keeps ACME retry jobs already in backoff, still on the old TLS settings; a restart drops them.
-    # Only done while hs has no certificate, so it interrupts nothing that is working.
+    # Only done while some site has no certificate, i.e. while that site is already down.
     - name: Restart Caddy to restart issuance
       ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml restart caddy
-      when: _hs_probe.rc != 0
+      when: _cert_probe.rc != 0
       changed_when: true
 
+    # The retry budget (~15 min) must outlast Caddy's DNS-01 propagation_delay + propagation_timeout.
+    - name: Every site presents a publicly trusted certificate
+      ansible.builtin.script:
+        cmd: "{{ _cert_check }}"
+        executable: python3
+      register: _certs
+      until: _certs.rc == 0
+      retries: 80
+      delay: 10
+      changed_when: false
+
+    - name: Certificates
+      ansible.builtin.debug:
+        var: _certs.stdout_lines
+
     # curl, not uri: --resolve pins the connection to this host while still validating the public certificate.
-    # The retry budget (~15 min) must outlast Caddy's DNS-01 propagation_timeout (10m) on a first issuance.
-    - name: Headscale answers over HTTPS with a publicly trusted certificate  # noqa: command-instead-of-module
+    - name: Headscale answers over HTTPS  # noqa: command-instead-of-module
       ansible.builtin.command: >-
-        curl -fsS --max-time 10 --retry 80 --retry-delay 10 --retry-all-errors
+        curl -fsS --max-time 10 --retry 6 --retry-delay 5 --retry-all-errors
         --resolve {{ headscale_hostname }}:443:127.0.0.1 https://{{ headscale_hostname }}/health
       register: _hs_health
       changed_when: false
@@ -181,7 +198,8 @@
 
     - name: Fail with the evidence
       ansible.builtin.fail:
-        msg: "{{ ['Headscale has no valid certificate yet.'] + _egress.stdout_lines + _caddy_acme_log.stdout_lines }}"
+        msg: "{{ (_certs.stdout_lines | default(_cert_probe.stdout_lines | default(['certificate check did not run'])))
+                 + _egress.stdout_lines + _caddy_acme_log.stdout_lines }}"
 
 - name: Show health
   ansible.builtin.debug:

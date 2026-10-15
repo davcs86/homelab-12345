@@ -23,14 +23,18 @@ def request(txid: bytes) -> bytes:
 
 
 def mapped_address(resp: bytes) -> str:
+    key = struct.pack("!I", MAGIC) + resp[8:20]  # XOR key: magic cookie, then transaction ID for IPv6
     i = 20
     while i + 4 <= len(resp):
         typ, length = struct.unpack("!HH", resp[i:i + 4])
         val = resp[i + 4:i + 4 + length]
-        if typ == 0x0020 and val[1] == 0x01:  # XOR-MAPPED-ADDRESS, IPv4
+        if typ == 0x0020 and len(val) >= 8:  # XOR-MAPPED-ADDRESS
             port = struct.unpack("!H", val[2:4])[0] ^ (MAGIC >> 16)
-            addr = struct.unpack("!I", val[4:8])[0] ^ MAGIC
-            return f"{ipaddress.IPv4Address(addr)}:{port}"
+            raw = bytes(a ^ b for a, b in zip(val[4:], key))
+            addr = ipaddress.ip_address(raw)
+            if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:  # server listens on [::]
+                addr = addr.ipv4_mapped
+            return f"[{addr}]:{port}" if addr.version == 6 else f"{addr}:{port}"
         i += 4 + length + (-length % 4)
     return "?"
 
