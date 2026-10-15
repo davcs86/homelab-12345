@@ -135,6 +135,21 @@
 
 - name: Headscale over HTTPS, with ACME diagnostics on failure
   block:
+    - name: Probe for an existing certificate  # noqa: command-instead-of-module
+      ansible.builtin.command: >-
+        curl -fsS --max-time 10
+        --resolve {{ headscale_hostname }}:443:127.0.0.1 https://{{ headscale_hostname }}/health
+      register: _hs_probe
+      changed_when: false
+      failed_when: false
+
+    # A reload keeps ACME retry jobs already in backoff, still on the old TLS settings; a restart drops them.
+    # Only done while hs has no certificate, so it interrupts nothing that is working.
+    - name: Restart Caddy to restart issuance
+      ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml restart caddy
+      when: _hs_probe.rc != 0
+      changed_when: true
+
     # curl, not uri: --resolve pins the connection to this host while still validating the public certificate.
     # The retry budget (~15 min) must outlast Caddy's DNS-01 propagation_timeout (10m) on a first issuance.
     - name: Headscale answers over HTTPS with a publicly trusted certificate  # noqa: command-instead-of-module
