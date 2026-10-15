@@ -1,0 +1,125 @@
+---
+# Offsite pgBackRest repository, served only on the tailnet address with mutual TLS.
+# TODO(ask): database host details (PG major version, data dir) are needed before scheduling backups here.
+- name: PGDG apt key
+  ansible.builtin.get_url:
+    url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    dest: /etc/apt/keyrings/pgdg.asc
+    mode: "0644"
+
+- name: PGDG apt source
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/pgdg.sources
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://apt.postgresql.org/pub/repos/apt
+      Suites: {{ ansible_facts.distribution_release }}-pgdg
+      Components: main
+      Signed-By: /etc/apt/keyrings/pgdg.asc
+  register: _pgdg
+
+- name: Install pinned pgBackRest (must match the database host)
+  ansible.builtin.apt:
+    name: "pgbackrest={{ pgbackrest_package_version }}"
+    update_cache: "{{ _pgdg is changed }}"
+    allow_downgrade: true
+
+- name: Hold pgBackRest
+  ansible.builtin.dpkg_selections:
+    name: pgbackrest
+    selection: hold
+
+- name: Service account
+  ansible.builtin.user:
+    name: pgbackrest
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ pgbackrest_repo_path }}"
+    create_home: false
+
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ pgbackrest_repo_path }}", mode: "0750"}
+    - {path: /var/log/pgbackrest, mode: "0750"}
+    - {path: /etc/pgbackrest/tls, mode: "0750"}
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: TLS material (private CA, server cert/key) from SOPS
+  ansible.builtin.copy:
+    dest: "/etc/pgbackrest/tls/{{ item.name }}"
+    content: "{{ edge_secrets[item.key] }}"
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: ca.crt, key: pgbackrest_tls_ca_crt, mode: "0644"}
+    - {name: server.crt, key: pgbackrest_tls_server_crt, mode: "0644"}
+    - {name: server.key, key: pgbackrest_tls_server_key, mode: "0600"}
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+  notify: Restart pgbackrest server
+
+- name: Pgbackrest.conf
+  ansible.builtin.copy:
+    dest: /etc/pgbackrest/pgbackrest.conf
+    owner: pgbackrest
+    group: pgbackrest
+    mode: "0640"
+    content: |
+      [global]
+      repo1-path={{ pgbackrest_repo_path }}
+      log-level-console=info
+      log-level-file=detail
+      tls-server-address={{ edge_tailnet_ipv4 }}
+      tls-server-port={{ pgbackrest_tls_port }}
+      tls-server-ca-file=/etc/pgbackrest/tls/ca.crt
+      tls-server-cert-file=/etc/pgbackrest/tls/server.crt
+      tls-server-key-file=/etc/pgbackrest/tls/server.key
+      # Only the database host's client certificate, and only for its stanza.
+      tls-server-auth={{ pgbackrest_client_cn }}={{ pgbackrest_stanza }}
+  notify: Restart pgbackrest server
+
+- name: TLS server unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/pgbackrest-server.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=pgBackRest TLS server (tailnet only)
+      After=network-online.target tailscaled.service
+      Wants=network-online.target
+      OnFailure=edge-notify@%n.service
+
+      [Service]
+      User=pgbackrest
+      Group=pgbackrest
+      ExecStart=/usr/bin/pgbackrest server
+      ExecReload=/bin/kill -HUP $MAINPID
+      Restart=on-failure
+      RestartSec=10
+      # Binding to the tailnet IP fails until tailscaled has it; Restart= covers boot ordering.
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ReadWritePaths={{ pgbackrest_repo_path }} /var/log/pgbackrest /tmp
+      ProtectHome=true
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart pgbackrest server
+
+- name: Enable TLS server
+  ansible.builtin.systemd_service:
+    name: pgbackrest-server
+    enabled: true
+    state: started
+    daemon_reload: true

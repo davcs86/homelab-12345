@@ -1,0 +1,73 @@
+---
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: ansible-galaxy collection install -r requirements.yml -p collections
+      - name: yamllint
+        run: yamllint -s .
+      - name: ansible-lint
+        run: ansible-lint
+      - name: Syntax check every playbook
+        run: for p in playbooks/*.yml; do ansible-playbook --syntax-check "$p"; done
+      - name: shellcheck
+        run: shellcheck scripts/*.sh
+      - name: No plaintext secrets in secrets/
+        run: |
+          for f in secrets/*.sops.yaml; do
+            [ -e "$f" ] || continue
+            grep -q '^sops:' "$f" || { echo "::error file=$f::not SOPS-encrypted"; exit 1; }
+          done
+
+  policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Headscale policy parses, and its tests block passes against fake tagged nodes
+        run: scripts/policy-test.sh
+
+  caddy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: ansible-galaxy collection install -r requirements.yml -p collections
+      - name: Build Caddy with pinned plugins
+        run: |
+          v=inventories/prod/group_vars/all/versions.yml
+          docker build \
+            --build-arg CADDY_BUILDER_IMAGE="$(grep '^caddy_builder_image:' $v | cut -d'"' -f2)" \
+            --build-arg CADDY_RUNTIME_IMAGE="$(grep '^caddy_runtime_image:' $v | cut -d'"' -f2)" \
+            --build-arg CADDY_VERSION="$(grep '^caddy_version:' $v | cut -d'"' -f2)" \
+            --build-arg CADDY_DNS_DESEC_VERSION="$(grep '^caddy_dns_desec_version:' $v | awk '{print $2}')" \
+            --build-arg CADDY_RATELIMIT_COMMIT="$(grep '^caddy_ratelimit_commit:' $v | awk '{print $2}')" \
+            -t edge-caddy:ci roles/stack/files/caddy
+      - name: Validate rendered Caddyfile
+        run: |
+          ansible localhost -c local -m template -a "src=roles/stack/templates/Caddyfile.j2 dest=$RUNNER_TEMP/Caddyfile"
+          docker run --rm -e DESEC_TOKEN=validate -v "$RUNNER_TEMP/Caddyfile:/etc/caddy/Caddyfile:ro" edge-caddy:ci \
+            caddy validate --config /etc/caddy/Caddyfile
+      - name: Routing, rate limits, body caps, tailnet split (offline, mock upstreams)
+        run: scripts/caddy-routing-test.sh edge-caddy:ci

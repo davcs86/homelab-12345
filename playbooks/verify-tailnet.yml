@@ -1,0 +1,94 @@
+---
+# Tailnet-side acceptance checks, run on the edge over SSH:
+#   1. a throwaway node joins with an ephemeral tag:ci pre-auth key via `tailscale up --login-server`
+#   2. it appears in `headscale nodes list` with tag:ci
+#   3. an extra_records name resolves through MagicDNS on that node
+#   4. after it goes offline (killed, no logout) headscale deletes it within the ephemeral inactivity timeout
+- name: Verify tailnet behaviour
+  hosts: edge
+  become: true
+  gather_facts: false
+  vars:
+    _hs: docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale
+  tasks:
+    - name: Fix the test node name and read the edge's tailnet address
+      ansible.builtin.command: tailscale ip -4
+      register: _edge_ip
+      changed_when: false
+
+    - name: Remember both
+      ansible.builtin.set_fact:
+        _node: "verify-ci-{{ 99999 | random(seed=inventory_hostname ~ lookup('ansible.builtin.pipe', 'date +%s%N')) }}"
+        _edge_ipv4: "{{ _edge_ip.stdout | trim }}"
+
+    - name: Join, check, go offline, check removal
+      block:
+        - name: Mint single-use ephemeral tag:ci key (10 minutes)
+          ansible.builtin.command: "{{ _hs }} preauthkeys create --tags tag:ci --ephemeral --expiration 10m -o json"
+          register: _key
+          changed_when: true
+          no_log: true
+
+        - name: Start test node (own netns, kernel networking; control plane reached via the host's Caddy)
+          ansible.builtin.command: >-
+            docker run -d --name {{ _node }} --cap-add NET_ADMIN --cap-add NET_RAW --device /dev/net/tun
+            --add-host {{ headscale_hostname }}:host-gateway
+            -e TS_AUTHKEY={{ (_key.stdout | from_json).key }}
+            -e TS_USERSPACE=false -e TS_ACCEPT_DNS=true -e TS_HOSTNAME={{ _node }}
+            -e TS_EXTRA_ARGS=--login-server=https://{{ headscale_hostname }}
+            {{ tailscale_image }}
+          changed_when: true
+          no_log: true
+
+        - name: Node is registered, tagged tag:ci and online
+          ansible.builtin.command: "{{ _hs }} nodes list -o json"
+          register: _nodes
+          until: >-
+            (_nodes.stdout | from_json | selectattr('given_name', 'equalto', _node)
+             | selectattr('online', 'defined') | selectattr('online') | list | length) == 1
+          retries: 30
+          delay: 4
+          changed_when: false
+
+        - name: Show the node as headscale sees it
+          ansible.builtin.debug:
+            msg: >-
+              {{ _nodes.stdout | from_json | selectattr('given_name', 'equalto', _node) | first | dict2items
+                 | selectattr('key', 'in', ['given_name', 'tags', 'online', 'ip_addresses']) | items2dict }}
+
+        - name: Assert the tag
+          ansible.builtin.assert:
+            that: "'tag:ci' in (_nodes.stdout | from_json | selectattr('given_name', 'equalto', _node) | first).tags"
+
+        - name: Extra record resolves on the test node via MagicDNS
+          ansible.builtin.command: docker exec {{ _node }} nslookup {{ public_app_hostname }} 100.100.100.100
+          register: _dns
+          until: _edge_ipv4 in _dns.stdout
+          retries: 10
+          delay: 3
+          changed_when: false
+
+        - name: Show resolution
+          ansible.builtin.debug:
+            var: _dns.stdout_lines
+
+        - name: Take the node offline without logging out
+          ansible.builtin.command: docker rm -f {{ _node }}
+          changed_when: true
+
+        - name: Headscale removes it after the inactivity timeout
+          ansible.builtin.command: "{{ _hs }} nodes list -o json"
+          register: _after
+          until: _after.stdout | from_json | selectattr('given_name', 'equalto', _node) | list | length == 0
+          retries: 48
+          delay: 10
+          changed_when: false
+
+        - name: Result
+          ansible.builtin.debug:
+            msg: "{{ _node }} joined as tag:ci, resolved {{ public_app_hostname }} to {{ _edge_ipv4 }}, and was removed after going offline."
+      always:
+        - name: Remove the test container if still present
+          ansible.builtin.command: docker rm -f {{ _node }}
+          changed_when: false
+          failed_when: false

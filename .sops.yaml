@@ -1,0 +1,10 @@
+---
+# Recipients are public keys only. Decrypt with SOPS_AGE_SSH_PRIVATE_KEY_FILE pointing at either private key.
+#   sops_admin  - David's key (password manager / workstation)
+#   sops_deploy - GitHub Actions `production` environment secret SOPS_AGE_SSH_PRIVATE_KEY
+# Rotating a recipient: edit this list, then `sops updatekeys secrets/*.sops.yaml`.
+creation_rules:
+  - path_regex: secrets/.*\.sops\.yaml$
+    age: >-
+      TODO-sops_admin-ssh-ed25519-public-key,
+      TODO-sops_deploy-ssh-ed25519-public-key

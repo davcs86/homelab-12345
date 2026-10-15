@@ -1,0 +1,83 @@
+---
+# ---------- Naming ----------
+domain: natanddavehouse.com
+headscale_hostname: "hs.{{ domain }}"
+public_app_hostname: "xstockstrat.{{ domain }}"
+magicdns_base_domain: "ts.{{ domain }}"
+acme_zone: "acme.{{ domain }}"          # delegated to deSEC; holds only ACME TXT records
+acme_email: davcs86@gmail.com
+kuma_hostname: "kuma.{{ magicdns_base_domain }}"
+ntfy_hostname: "ntfy.{{ magicdns_base_domain }}"
+
+# ---------- DigitalOcean ----------
+do_region: sfo3
+do_size: s-1vcpu-2gb-amd
+do_droplet_name: edge-sfo3-01
+do_tag: homelab-edge
+do_firewall_name: homelab-edge
+do_monitoring: true
+do_backups: false                        # deferred (cost); headscale state has its own encrypted backup
+do_ipv6: true
+# do_reserved_ipv4 is written to generated.yml by the first provision run (committed by the workflow),
+# so later rebuilds re-attach the same address and DNS never changes.
+
+# ---------- Host access ----------
+admin_user: david_admin                  # TODO(confirm): sudo username on the VPS
+deploy_user: deploy                      # used only by GitHub Actions
+# Public halves only; private keys never enter the repo.
+admin_ssh_public_keys: []                # TODO(provide): id_ed25519_admin.pub
+deploy_ssh_public_key: ""                # TODO(provide): id_ed25519_deploy.pub
+# Source CIDRs allowed to reach tcp/22 publicly. Empty after bootstrap; deploys go over the tailnet.
+ssh_public_allow_cidrs: []
+
+# ---------- Tailnet ----------
+headscale_users: [david, david_admin]
+edge_tailnet_hostname: edge
+tailnet_v4_prefix: 100.64.0.0/10
+tailnet_v6_prefix: fd7a:115c:a1e0::/48
+ephemeral_inactivity_timeout: 5m
+# Home nodes as they will be named in MagicDNS (<hostname>.<magicdns_base_domain>).
+app_tailnet_host: "app.{{ magicdns_base_domain }}"      # TODO(confirm): app VM hostname
+pve_tailnet_host: "pve.{{ magicdns_base_domain }}"      # TODO(confirm): Proxmox hostname
+backup_tailnet_host: "backup.{{ magicdns_base_domain }}" # TODO(confirm): SATA backup host hostname
+
+# ---------- xstockstrat upstreams ----------
+app_ui_port: 3000
+app_agent_port: 9000
+
+# ---------- Rate limits (per client IP) ----------
+ratelimit:
+  login: {events: 5, window: 1m}
+  login_hourly: {events: 30, window: 1h}
+  register: {events: 10, window: 1h}
+  oauth: {events: 30, window: 1m}
+  mcp: {events: 120, window: 1m}
+  general: {events: 300, window: 1m}
+body_limits:
+  mcp: 1MB
+  login: 8KB
+  register: 16KB
+  default: 64KB
+
+# ---------- Monitoring ----------
+ntfy_alert_topic: homelab-alerts
+heartbeat_interval_seconds: 60
+heartbeat_grace_seconds: 180
+
+# ---------- Backups ----------
+backup_schedule: "*-*-* 03:17:00 UTC"
+backup_local_retention_days: 7
+backup_remote_user: edge-backup                         # account on the backup host, forced to rrsync
+backup_remote_path: headscale                           # relative to that account's rrsync root
+# Public recipients; the offline key decrypts, the on-host key exists only for restore verification.
+backup_age_recipients: []                               # TODO(provide): backup.pub (ssh-ed25519)
+backup_host_known_hosts: ""                             # TODO(provide): `ssh-keyscan backup.<tailnet>` output; empty = trust on first use
+
+# ---------- pgBackRest offsite repo ----------
+pgbackrest_tls_port: 8432
+pgbackrest_stanza: main
+pgbackrest_repo_path: /var/lib/pgbackrest
+pgbackrest_client_cn: db-pgbackrest                     # CN on the database host's client cert
+
+# ---------- Paths ----------
+edge_root: /opt/edge

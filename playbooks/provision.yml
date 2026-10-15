@@ -1,0 +1,15 @@
+---
+# DigitalOcean resources via the API: droplet, reserved IPv4, Cloud Firewall.
+# Pass -e '{"ssh_public_allow_cidrs": ["<runner-ip>/32"]}' only for a bootstrap run; the next run without it closes 22/tcp.
+- name: Provision edge infrastructure
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - do_infra
+  post_tasks:
+    - name: Hand the public IP to later plays in the same run
+      ansible.builtin.add_host:
+        name: edge-sfo3-01
+        edge_public_ip: "{{ edge_public_ip }}"
+      changed_when: false

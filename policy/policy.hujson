@@ -1,0 +1,69 @@
+// Headscale tailnet policy (grants syntax). Default deny: anything not granted below is blocked.
+// Deployed to /opt/edge/headscale/policy.hujson; `make policy-test` runs the "tests" block against a scratch headscale.
+{
+  "groups": {
+    "group:admins": ["david_admin@"],
+    "group:members": ["david@"],
+  },
+
+  "tagOwners": {
+    "tag:edge":   ["group:admins"], // this VPS
+    "tag:app":    ["group:admins"], // xstockstrat app-tier VM
+    "tag:db":     ["group:admins"], // Postgres + TimescaleDB LXC/VM
+    "tag:agent":  ["group:admins"], // OpenClaw VM
+    "tag:llm":    ["group:admins"], // local LLM host
+    "tag:ci":     ["group:admins"], // ephemeral CI runners that ship to the app VM
+    "tag:deploy": ["group:admins"], // ephemeral GitHub Actions runners that configure this VPS
+    "tag:backup": ["group:admins"], // SATA backup host
+    "tag:pve":    ["group:admins"], // Proxmox host
+  },
+
+  "grants": [
+    // Admin devices: full reach, including SSH, Postgres, LLM and Proxmox.
+    {"src": ["group:admins"], "dst": ["*"], "ip": ["*"]},
+
+    // Everyday devices: only the edge's HTTPS (split-horizon xstockstrat UI, Kuma, ntfy).
+    {"src": ["group:members"], "dst": ["tag:edge"], "ip": ["tcp:443"]},
+
+    // Edge -> app: only the UI and agent ports (public /agent + OAuth routes, tailnet UI, Kuma probes).
+    {"src": ["tag:edge"], "dst": ["tag:app"], "ip": ["tcp:3000", "tcp:9000"]},
+    // Edge -> Proxmox: Kuma TCP probe of the web UI port only.
+    {"src": ["tag:edge"], "dst": ["tag:pve"], "ip": ["tcp:8006"]},
+    // Edge -> backup host: rsync over SSH, forced to rrsync on the far side.
+    {"src": ["tag:edge"], "dst": ["tag:backup"], "ip": ["tcp:22"]},
+
+    // App -> edge: the UI calls its own public hostname (split-horizon) for /accounts probes.
+    {"src": ["tag:app"], "dst": ["tag:edge"], "ip": ["tcp:443"]},
+    // Postgres is reachable only by tag:app (and admins above).
+    {"src": ["tag:app"], "dst": ["tag:db"], "ip": ["tcp:5432"]},
+    // LLM is reachable only by tag:app, tag:agent (approved) and admins.
+    {"src": ["tag:app", "tag:agent"], "dst": ["tag:llm"], "ip": ["tcp:11434"]},
+
+    // Database host -> offsite pgBackRest repo (TLS server, client-cert auth).
+    {"src": ["tag:db"], "dst": ["tag:edge"], "ip": ["tcp:8432"]},
+
+    // Proxmox -> Kuma push endpoint (dead-man heartbeat) via Caddy.
+    {"src": ["tag:pve"], "dst": ["tag:edge"], "ip": ["tcp:443"]},
+
+    // CI ships to the app VM over SSH only.
+    {"src": ["tag:ci"], "dst": ["tag:app"], "ip": ["tcp:22"]},
+    // Deploy runners configure this VPS over SSH only.
+    {"src": ["tag:deploy"], "dst": ["tag:edge"], "ip": ["tcp:22"]},
+
+    // TODO(ask): does the OpenClaw VM (tag:agent) need the xstockstrat MCP (tag:app:9000) or anything else?
+    // TODO(ask): should tag:llm ever initiate connections (e.g. model downloads via a tailnet proxy)? Currently none.
+  ],
+
+  // Executed by `headscale policy check`; a failing test rejects the policy.
+  "tests": [
+    {"src": "tag:edge",   "accept": ["tag:app:9000", "tag:app:3000"], "deny": ["tag:app:22", "tag:db:5432", "tag:llm:11434"]},
+    {"src": "tag:ci",     "accept": ["tag:app:22"], "deny": ["tag:app:3000", "tag:app:9000", "tag:edge:22", "tag:db:5432"]},
+    {"src": "tag:deploy", "accept": ["tag:edge:22"], "deny": ["tag:app:22", "tag:edge:443", "tag:db:5432"]},
+    {"src": "tag:agent",  "accept": ["tag:llm:11434"], "deny": ["tag:db:5432", "tag:db:22", "tag:app:9000"]},
+    {"src": "tag:app",    "accept": ["tag:db:5432", "tag:llm:11434"], "deny": ["tag:db:22", "tag:edge:22"]},
+    {"src": "tag:db",     "accept": ["tag:edge:8432"], "deny": ["tag:edge:22", "tag:app:3000"]},
+    {"src": "tag:pve",    "accept": ["tag:edge:443"], "deny": ["tag:edge:22", "tag:db:5432"]},
+    {"src": "david@",     "accept": ["tag:edge:443"], "deny": ["tag:db:5432", "tag:llm:11434", "tag:app:22", "tag:edge:22"]},
+    {"src": "david_admin@", "accept": ["tag:db:5432", "tag:llm:11434", "tag:edge:22", "tag:pve:8006"]},
+  ],
+}

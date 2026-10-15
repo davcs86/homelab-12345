@@ -1,0 +1,80 @@
+---
+# Day-2 tailnet administration, run on the edge over SSH (from the node-admin workflow or an admin device).
+#   -e action=list
+#   -e action=register auth_id=hskey-authreq-... user=david|david_admin
+#   -e action=tag node=<name> tags=tag:app[,tag:x]
+#   -e action=expire|delete node=<name>
+#   -e action=ci-key [ci_key_hours=24]   -> reusable ephemeral tag:ci key, SOPS-encrypted to secrets/ci-authkey.sops.yaml
+- name: Tailnet node administration
+  hosts: edge
+  become: true
+  gather_facts: false
+  vars:
+    _hs: docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale
+  tasks:
+    - name: Validate inputs
+      ansible.builtin.assert:
+        that:
+          - action in ['list', 'register', 'tag', 'expire', 'delete', 'ci-key']
+          - action != 'register' or (auth_id | default('') is match('^hskey-authreq-[A-Za-z0-9_-]{24}$') and user | default('') in headscale_users)
+          - action not in ['tag', 'expire', 'delete'] or node | default('') is match('^[a-z0-9-]+$')
+          - action != 'tag' or tags | default('') is match('^tag:[a-z0-9-]+(,tag:[a-z0-9-]+)*$')
+
+    - name: Nodes
+      ansible.builtin.command: "{{ _hs }} nodes list -o json"
+      register: _nodes
+      changed_when: false
+
+    - name: Resolve node id
+      ansible.builtin.set_fact:
+        _node_id: "{{ (_nodes.stdout | from_json | selectattr('given_name', 'equalto', node) | first).id }}"
+      when: action in ['tag', 'expire', 'delete']
+
+    - name: Register a pending device for a user
+      ansible.builtin.command: "{{ _hs }} auth register --user {{ user }} --auth-id {{ auth_id }}"
+      when: action == 'register'
+      changed_when: true
+
+    - name: Set tags
+      ansible.builtin.command: "{{ _hs }} nodes tag -i {{ _node_id }} -t {{ tags }}"
+      when: action == 'tag'
+      changed_when: true
+
+    - name: Expire (forces re-authentication, keeps the record)
+      ansible.builtin.command: "{{ _hs }} nodes expire -i {{ _node_id }}"
+      when: action == 'expire'
+      changed_when: true
+
+    - name: Delete (revokes the node's key immediately)
+      ansible.builtin.command: "{{ _hs }} nodes delete -i {{ _node_id }} --force"
+      when: action == 'delete'
+      changed_when: true
+
+    - name: Mint a reusable, ephemeral tag:ci key and encrypt it into the repo
+      when: action == 'ci-key'
+      block:
+        - name: Mint
+          ansible.builtin.command: >-
+            {{ _hs }} preauthkeys create --tags tag:ci --reusable --ephemeral --expiration {{ ci_key_hours | default(24) }}h -o json
+          register: _ci_key
+          changed_when: true
+          no_log: true
+        - name: Encrypt
+          community.sops.sops_encrypt:
+            path: "{{ playbook_dir }}/../secrets/ci-authkey.sops.yaml"
+            content_yaml:
+              tailscale_ci_authkey: "{{ (_ci_key.stdout | from_json).key }}"
+              expires_at: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime((_ci_key.stdout | from_json).expiration.seconds) }}"
+            force: true
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+    - name: Nodes after
+      ansible.builtin.command: "{{ _hs }} nodes list"
+      register: _after
+      changed_when: false
+
+    - name: Show
+      ansible.builtin.debug:
+        var: _after.stdout_lines

@@ -1,0 +1,104 @@
+---
+- name: Require the offline backup recipient
+  ansible.builtin.assert:
+    that: backup_age_recipients | length > 0
+    fail_msg: backup_age_recipients must list the offline backup public key (ssh-ed25519 or age1...).
+
+- name: Packages (age from the Ubuntu archive)
+  ansible.builtin.apt:
+    name: [age, sqlite3, jq, rsync]
+    state: present
+
+- name: Backup config dir
+  ansible.builtin.file:
+    path: /etc/edge-backup
+    state: directory
+    mode: "0700"
+
+# Exists only so the nightly drill can decrypt without the offline key; it protects data that already
+# lives in plaintext on this host, so it adds no exposure.
+- name: Restore-test identity
+  ansible.builtin.command: age-keygen -o /etc/edge-backup/restore-test.agekey
+  args:
+    creates: /etc/edge-backup/restore-test.agekey
+
+- name: Restore-test public key
+  ansible.builtin.command: age-keygen -y /etc/edge-backup/restore-test.agekey
+  register: _restore_pub
+  changed_when: false
+
+- name: Recipients
+  ansible.builtin.copy:
+    dest: /etc/edge-backup/recipients.txt
+    mode: "0600"
+    content: "{{ (backup_age_recipients + [_restore_pub.stdout]) | join('\n') }}\n"
+
+- name: SSH key for pushing to the backup host
+  community.crypto.openssh_keypair:
+    path: /etc/edge-backup/id_ed25519
+    type: ed25519
+    comment: "edge-backup@{{ inventory_hostname }}"
+    mode: "0600"
+  register: _backup_ssh
+
+- name: Pin the backup host key when known
+  ansible.builtin.copy:
+    dest: /etc/edge-backup/known_hosts
+    content: "{{ backup_host_known_hosts | default('') }}\n"
+    mode: "0600"
+    force: "{{ backup_host_known_hosts | default('') | length > 0 }}"
+
+- name: Scripts
+  ansible.builtin.template:
+    src: "{{ item }}.sh.j2"
+    dest: "/usr/local/sbin/{{ item }}"
+    mode: "0750"
+  loop: [edge-backup, edge-backup-verify]
+
+- name: Systemd units
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: edge-backup.service
+      content: |
+        [Unit]
+        Description=Encrypted headscale backup to the home backup host, then restore drill
+        Wants=network-online.target
+        After=network-online.target docker.service tailscaled.service
+        OnFailure=edge-notify@%n.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/sbin/edge-backup
+        ExecStartPost=/usr/local/sbin/edge-backup-verify
+        Nice=10
+        IOSchedulingClass=idle
+    - name: edge-backup.timer
+      content: |
+        [Unit]
+        Description=Nightly headscale backup
+
+        [Timer]
+        OnCalendar={{ backup_schedule }}
+        Persistent=true
+        RandomizedDelaySec=10m
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Enable backup timer
+  ansible.builtin.systemd_service:
+    name: edge-backup.timer
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Public key to authorise on the backup host (forced to rrsync)
+  ansible.builtin.debug:
+    msg: >-
+      On {{ backup_tailnet_host }}, in ~{{ backup_remote_user }}/.ssh/authorized_keys:
+      restrict,command="rrsync -wo ~/{{ backup_remote_path }}" {{ _backup_ssh.public_key }}

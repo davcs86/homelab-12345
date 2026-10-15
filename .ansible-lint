@@ -1,0 +1,8 @@
+---
+profile: production
+exclude_paths:
+  - collections/
+  - .github/
+  - secrets/
+skip_list:
+  - var-naming[no-role-prefix]   # shared inventory vars are deliberately unprefixed

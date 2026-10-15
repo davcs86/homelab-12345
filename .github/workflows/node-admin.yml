@@ -1,0 +1,72 @@
+---
+name: node-admin
+
+# Add, tag, expire or revoke tailnet nodes, or mint a CI key, from GitHub (works from the mobile app).
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [list, register, tag, expire, delete, ci-key]
+        default: list
+      auth_id:
+        description: "register: the hskey-authreq-... ID shown by `tailscale up --login-server` on the new device"
+        required: false
+      user:
+        description: "register: david or david_admin"
+        required: false
+      node:
+        description: "tag/expire/delete: node name as in `list`"
+        required: false
+      tags:
+        description: "tag: comma-separated, e.g. tag:app"
+        required: false
+
+permissions:
+  contents: write   # ci-key commits secrets/ci-authkey.sops.yaml
+
+concurrency:
+  group: deploy-edge
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          tailscale: "true"
+      - name: Credentials
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SOPS_KEY: ${{ secrets.SOPS_AGE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SOPS_KEY" > "$RUNNER_TEMP/sops_key" && chmod 600 "$RUNNER_TEMP/sops_key"
+          echo "SOPS_AGE_SSH_PRIVATE_KEY_FILE=$RUNNER_TEMP/sops_key" >> "$GITHUB_ENV"
+      - id: ts
+        run: scripts/runner-tailnet.sh up
+      - name: Run
+        env:
+          IN_ACTION: ${{ inputs.action }}
+          IN_AUTH_ID: ${{ inputs.auth_id }}
+          IN_USER: ${{ inputs.user }}
+          IN_NODE: ${{ inputs.node }}
+          IN_TAGS: ${{ inputs.tags }}
+        run: |
+          jq -n --arg action "$IN_ACTION" --arg auth_id "$IN_AUTH_ID" --arg user "$IN_USER" \
+                --arg node "$IN_NODE" --arg tags "$IN_TAGS" --arg edge "${{ steps.ts.outputs.edge_ip }}" \
+                '{action:$action, auth_id:$auth_id, user:$user, node:$node, tags:$tags, edge_tailnet_address:$edge}' > "$RUNNER_TEMP/vars.json"
+          ansible-playbook playbooks/node-admin.yml -e "@$RUNNER_TEMP/vars.json"
+      - if: always()
+        run: scripts/runner-tailnet.sh down
+      - name: Commit CI key
+        if: inputs.action == 'ci-key'
+        run: |
+          git add secrets/ci-authkey.sops.yaml
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(tailnet): rotate tag:ci key [run ${{ github.run_id }}]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

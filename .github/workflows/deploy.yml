@@ -1,0 +1,128 @@
+---
+name: deploy
+
+# Every run waits for approval on the `production` environment (required reviewer).
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          provision = DO resources only (no SSH).
+          bootstrap = first configuration over public SSH, opened to this runner's IP only and closed at the end.
+          tailnet = normal runs, over the tailnet as an ephemeral tag:deploy node.
+        type: choice
+        options: [tailnet, provision, bootstrap]
+        default: tailnet
+      rotate_deploy_key:
+        description: Mint a new tag:deploy pre-auth key even if the current one is still valid
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # commits generated.yml, known_hosts and the rotated deploy key
+
+concurrency:
+  group: deploy-edge
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment: production
+    timeout-minutes: 60
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      ANSIBLE_FORCE_COLOR: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: ./.github/actions/setup
+        with:
+          tailscale: ${{ inputs.mode == 'tailnet' }}
+
+      - name: Credentials (files only, never echoed)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SOPS_KEY: ${{ secrets.SOPS_AGE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SOPS_KEY" > "$RUNNER_TEMP/sops_key" && chmod 600 "$RUNNER_TEMP/sops_key"
+          echo "SOPS_AGE_SSH_PRIVATE_KEY_FILE=$RUNNER_TEMP/sops_key" >> "$GITHUB_ENV"
+
+      # ---------- provision ----------
+      - name: Provision DigitalOcean resources
+        if: inputs.mode == 'provision'
+        run: ansible-playbook playbooks/provision.yml
+
+      # ---------- bootstrap ----------
+      - name: Runner egress IP
+        id: ip
+        if: inputs.mode == 'bootstrap'
+        run: |
+          a="$(curl -fsS https://api.ipify.org)"; b="$(curl -fsS https://checkip.amazonaws.com | tr -d '\n')"
+          [ "$a" = "$b" ] || { echo "egress IP sources disagree: $a vs $b"; exit 1; }
+          echo "cidr=$a/32" >> "$GITHUB_OUTPUT"
+
+      - name: Open 22/tcp to this runner only
+        if: inputs.mode == 'bootstrap'
+        run: >-
+          ansible-playbook playbooks/provision.yml
+          -e '{"ssh_public_allow_cidrs": ["${{ steps.ip.outputs.cidr }}"]}'
+
+      - name: Pin the fresh droplet's host key (trust on first use, recorded in git)
+        if: inputs.mode == 'bootstrap'
+        run: |
+          ip="$(awk -F'"' '/^do_reserved_ipv4:/{print $2}' inventories/prod/group_vars/all/generated.yml)"
+          for _ in $(seq 1 30); do nc -z -w 3 "$ip" 22 && break; sleep 10; done
+          ssh-keyscan -t ed25519 "$ip" 2>/dev/null | sed "s/^[^ ]*/edge-sfo3-01/" > "$RUNNER_TEMP/hostkey"
+          test -s "$RUNNER_TEMP/hostkey"
+          { grep -v '^edge-sfo3-01 ' inventories/prod/known_hosts || true; cat "$RUNNER_TEMP/hostkey"; } > "$RUNNER_TEMP/kh"
+          mv "$RUNNER_TEMP/kh" inventories/prod/known_hosts
+
+      - name: Bootstrap users, then full configuration over public SSH
+        if: inputs.mode == 'bootstrap'
+        run: >-
+          ansible-playbook playbooks/provision.yml playbooks/bootstrap-users.yml playbooks/site.yml
+          -e edge_connect=public
+          -e '{"ssh_public_allow_cidrs": ["${{ steps.ip.outputs.cidr }}"]}'
+          -e rotate_deploy_key=true
+
+      - name: Close 22/tcp (always, even on failure)
+        if: always() && inputs.mode == 'bootstrap'
+        run: ansible-playbook playbooks/provision.yml
+
+      - name: Prove 22/tcp is closed from this runner
+        if: always() && inputs.mode == 'bootstrap'
+        run: |
+          ip="$(awk -F'"' '/^do_reserved_ipv4:/{print $2}' inventories/prod/group_vars/all/generated.yml)"
+          sleep 20
+          if nc -z -w 5 "$ip" 22; then echo "::error::22/tcp still reachable on $ip"; exit 1; fi
+          echo "22/tcp closed on $ip"
+
+      # ---------- tailnet ----------
+      - name: Join tailnet as ephemeral tag:deploy
+        id: ts
+        if: inputs.mode == 'tailnet'
+        run: scripts/runner-tailnet.sh up
+
+      - name: Converge DO resources and the edge over the tailnet
+        if: inputs.mode == 'tailnet'
+        run: >-
+          ansible-playbook playbooks/provision.yml playbooks/site.yml
+          -e edge_tailnet_address=${{ steps.ts.outputs.edge_ip }}
+          -e rotate_deploy_key=${{ inputs.rotate_deploy_key }}
+
+      - name: Leave tailnet
+        if: always() && inputs.mode == 'tailnet'
+        run: scripts/runner-tailnet.sh down
+
+      # ---------- record state ----------
+      - name: Commit generated state
+        if: always()
+        run: |
+          git add inventories/prod/group_vars/all/generated.yml inventories/prod/known_hosts secrets/deploy-authkey.sops.yaml 2>/dev/null || true
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "chore(deploy): record ${{ inputs.mode }} state [run ${{ github.run_id }}]"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

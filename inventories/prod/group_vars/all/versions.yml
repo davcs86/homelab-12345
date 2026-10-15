@@ -1,0 +1,36 @@
+---
+# Every pin is a release at least two weeks old on 2026-10-14. Rationale per pin lives in README.md § Versions.
+ubuntu_image: ubuntu-26-04-x64
+
+headscale_version: v0.29.4
+headscale_image: "ghcr.io/juanfont/headscale:v0.29.4@sha256:8833f828b414c0907b7e5c71da76473216fe17cce0818a166b536ec552c0903f"
+
+caddy_version: "2.11.6"
+caddy_builder_image: "caddy:2.11.6-builder@sha256:f5b1a66449d305280e559dba0ab9f7ce9a2a14c527c79d7c6fb48abc8f895818"
+caddy_runtime_image: "caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114ec961763cc52f5dbdaac2972d73"
+caddy_dns_desec_version: v1.1.0
+caddy_ratelimit_commit: 5625512f24f6f59d6f64fb3aafe5eecff0b286db
+
+uptime_kuma_image: "louislam/uptime-kuma:2.5.5@sha256:c74379ac4509ce2d2c2633f509e67003ee2e45b6e995c5e43fc101f45a0e1fbe"
+ntfy_image: "binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da"
+
+docker_packages:
+  docker-ce: "5:29.8.2-1~ubuntu.26.04~resolute"
+  docker-ce-cli: "5:29.8.2-1~ubuntu.26.04~resolute"
+  containerd.io: "2.3.6-1~ubuntu.26.04~resolute"
+  docker-buildx-plugin: "0.37.1-1~ubuntu.26.04~resolute"
+  docker-compose-plugin: "5.5.1-1~ubuntu.26.04~resolute"
+
+# Newest client inside headscale v0.29.4's generated capability table (tops out at 1.98).
+tailscale_package_version: "1.98.10"
+# Runner-side static build of the same version (deploy/verify workflows).
+tailscale_tgz_amd64_sha256: 52490ce0832b245857e2afef7426d6ae5a4b49fb391412833cc95729bd23f7de
+
+# Must equal the pgBackRest version on the database host.
+pgbackrest_package_version: "2.59.2-1.pgdg26.04+1"
+
+sops_version: v3.13.3
+sops_linux_amd64_sha256: e5bec3346a873ae91d871550f3e698c1aad962aff462a080e40f25fde17fef6b
+
+# Throwaway tailnet test node for verification; same client version as the edge.
+tailscale_image: "tailscale/tailscale:v1.98.10@sha256:cdf5612ded5be1344f1a704b8c5e53496db97376bb533e5e15f141e48bf60cc0"
