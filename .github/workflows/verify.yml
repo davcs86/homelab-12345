@@ -47,15 +47,7 @@ jobs:
 
       - name: UDP - STUN answers on 3478; common UDP services do not
         run: |
-          python3 - "${{ steps.t.outputs.ip }}" <<'EOF'
-          import os, socket, struct, sys
-          ip = sys.argv[1]
-          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5)
-          s.sendto(struct.pack("!HHI", 0x0001, 0, 0x2112A442) + os.urandom(12), (ip, 3478))
-          data, _ = s.recvfrom(2048)
-          assert struct.unpack("!H", data[:2])[0] == 0x0101, "not a STUN binding success"
-          print("STUN binding success from", ip)
-          EOF
+          python3 scripts/stun-probe.py "${{ steps.t.outputs.ip }}"
           sudo nmap -Pn -sU -p 53,67,69,123,137,161,500,1900,4500,5353,41641 --max-retries 2 "${{ steps.t.outputs.ip }}" | tee "$RUNNER_TEMP/udp.txt"
           ! grep -E '^[0-9]+/udp +open ' "$RUNNER_TEMP/udp.txt"
 

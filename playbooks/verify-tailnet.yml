@@ -87,6 +87,23 @@
         - name: Result
           ansible.builtin.debug:
             msg: "{{ _node }} joined as tag:ci, resolved {{ public_app_hostname }} to {{ _edge_ipv4 }}, and was removed after going offline."
+      rescue:
+        - name: DNS evidence (records on disk, as headscale sees them, and as the test node received them)
+          ansible.builtin.shell: |
+            set -o pipefail
+            echo "## host file"; cat {{ edge_root }}/headscale/extra-records.json
+            echo "## inside headscale"; docker compose -f {{ edge_root }}/compose.yml exec -T headscale cat /etc/headscale/extra-records.json
+            echo "## headscale log"; docker compose -f {{ edge_root }}/compose.yml logs --no-color headscale 2>&1 | grep -i 'extra' | tail -n 10
+            echo "## test node DNS"; docker exec {{ _node }} tailscale dns status --all
+          args:
+            executable: /bin/bash
+          register: _dns_evidence
+          changed_when: false
+          failed_when: false
+
+        - name: Fail with the evidence
+          ansible.builtin.fail:
+            msg: "{{ ansible_failed_result.msg | default('tailnet check failed') }} | {{ _dns_evidence.stdout_lines }}"
       always:
         - name: Remove the test container if still present
           ansible.builtin.command: docker rm -f {{ _node }}
