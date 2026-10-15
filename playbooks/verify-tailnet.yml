@@ -95,6 +95,9 @@
             echo "## headscale log"; docker compose -f {{ edge_root }}/compose.yml logs --no-color headscale 2>&1 | grep -i 'extra' | tail -n 10
             echo "## test node DNS"; docker exec {{ _node }} tailscale dns status --all
             echo "## node resolver, no network path"; docker exec {{ _node }} tailscale dns query {{ public_app_hostname }} A
+            echo "## node health (names a failed DNS config step)"; docker exec {{ _node }} tailscale status --peers=false
+            echo "## node resolv.conf and pre-tailscale backup"
+            docker exec {{ _node }} sh -c 'ls -l /etc/resolv*; cat /etc/resolv.conf; cat /etc/resolv.pre-tailscale-backup.conf 2>/dev/null'
             echo "## node routing for 100.100.100.100"; docker exec {{ _node }} sh -c 'ip rule; ip route get 100.100.100.100; ip route show table 52'
             echo "## in-domain name via 100.100.100.100"; docker exec {{ _node }} nslookup {{ status_hostname }} 100.100.100.100
           args:

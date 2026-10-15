@@ -146,6 +146,11 @@
       changed_when: false
       failed_when: false
 
+    - name: Certificate probe result
+      ansible.builtin.debug:
+        var: _cert_probe.stdout_lines
+      when: _cert_probe.rc != 0
+
     # A reload keeps ACME retry jobs already in backoff, still on the old TLS settings; a restart drops them.
     # Only done while some site has no certificate, i.e. while that site is already down.
     - name: Restart Caddy to restart issuance
