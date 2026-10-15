@@ -6,5 +6,5 @@
 creation_rules:
   - path_regex: secrets/.*\.sops\.yaml$
     age: >-
-      TODO-sops_admin-ssh-ed25519-public-key,
-      TODO-sops_deploy-ssh-ed25519-public-key
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDGNXLrl0ATnFuzi5jmS7j3NI++yQKGJwx+BNZDt3X1b,
+      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIC4XWHj7on22av0kCzpgCwLwxGFDXKxWauvP20WzJJNw

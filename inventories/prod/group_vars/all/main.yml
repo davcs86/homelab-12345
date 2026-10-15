@@ -25,8 +25,9 @@ do_ipv6: true
 admin_user: david_admin                  # TODO(confirm): sudo username on the VPS
 deploy_user: deploy                      # used only by GitHub Actions
 # Public halves only; private keys never enter the repo.
-admin_ssh_public_keys: []                # TODO(provide): id_ed25519_admin.pub
-deploy_ssh_public_key: ""                # TODO(provide): id_ed25519_deploy.pub
+admin_ssh_public_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKApHPR1HHqSoai6FXgCUwxfeeDChmSuhagQGqcsILm/ david_admin@homelab"
+deploy_ssh_public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGOuroREm2DF2lSNSCIX5dUsHdhR2Yk3pPWJ79E45zZR gha_deploy@homelab"
 # Source CIDRs allowed to reach tcp/22 publicly. Empty after bootstrap; deploys go over the tailnet.
 ssh_public_allow_cidrs: []
 
@@ -70,7 +71,8 @@ backup_local_retention_days: 7
 backup_remote_user: edge-backup                         # account on the backup host, forced to rrsync
 backup_remote_path: headscale                           # relative to that account's rrsync root
 # Public recipients; the offline key decrypts, the on-host key exists only for restore verification.
-backup_age_recipients: []                               # TODO(provide): backup.pub (ssh-ed25519)
+backup_age_recipients:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGeuIlI039KbXrVS1w7FJHHbig7uL8/vqK97pYuFZy8y backup@homelab"   # offline key; private half never on any host
 backup_host_known_hosts: ""                             # TODO(provide): `ssh-keyscan backup.<tailnet>` output; empty = trust on first use
 
 # ---------- pgBackRest offsite repo ----------
