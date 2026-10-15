@@ -1,17 +1,34 @@
 ---
 # First contact with a fresh droplet, as root with the DO-injected deploy key. Creates the admin and deploy
-# users; site.yml then disables root login. Safe to re-run only while root login is still possible.
+# users; site.yml then removes root's keys and disables root login. Re-runnable after a partial bootstrap:
+# once the deploy user can log in, the play connects as that user instead of root.
 - name: Bootstrap users
   hosts: edge
   gather_facts: false
-  vars:
-    ansible_user: root
+  become: true
   pre_tasks:
+    # Probes login and passwordless sudo: a bootstrap can stop after the deploy key is authorised but before sudo.
+    - name: Probe the deploy user
+      ansible.builtin.ping:
+      ignore_unreachable: true
+      ignore_errors: true
+      register: _deploy_probe
+
+    - name: Fall back to root on a fresh droplet
+      ansible.builtin.set_fact:
+        ansible_user: root
+      when: _deploy_probe is failed or (_deploy_probe.unreachable | default(false))
+
+    - name: Drop the probe's connection
+      ansible.builtin.meta: reset_connection
+
     - name: Wait for SSH
       ansible.builtin.wait_for_connection:
         timeout: 300
+
     - name: Gather facts
       ansible.builtin.setup:
+
     - name: Load secrets
       community.sops.load_vars:
         file: ../secrets/edge.sops.yaml
@@ -21,3 +38,11 @@
       no_log: true
   roles:
     - users
+  post_tasks:
+    # set_fact outlives the play; site.yml in the same run must connect as the deploy user.
+    - name: Hand back to the deploy user
+      ansible.builtin.set_fact:
+        ansible_user: "{{ deploy_user }}"
+
+    - name: Drop the bootstrap connection
+      ansible.builtin.meta: reset_connection
