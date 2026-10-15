@@ -2,7 +2,7 @@
 # Tailnet-side acceptance checks, run on the edge over SSH:
 #   1. a throwaway node joins with an ephemeral tag:ci pre-auth key via `tailscale up --login-server`
 #   2. it appears in `headscale nodes list` with tag:ci
-#   3. an extra_records name resolves through MagicDNS on that node
+#   3. its own MagicDNS resolver answers an extra_records name with the edge's tailnet address
 #   4. after it goes offline (killed, no logout) headscale deletes it within the ephemeral inactivity timeout
 - name: Verify tailnet behaviour
   hosts: edge
@@ -29,12 +29,14 @@
           changed_when: true
           no_log: true
 
-        - name: Start test node (own netns, kernel networking; control plane reached via the host's Caddy)
+        # Userspace networking: kernel mode inside a container fails on iptables (no filter table, no modules),
+        # which also leaves the node's DNS manager unconfigured. Control plane is reached via the host's Caddy.
+        - name: Start test node
           ansible.builtin.command: >-
-            docker run -d --name {{ _node }} --cap-add NET_ADMIN --cap-add NET_RAW --device /dev/net/tun
+            docker run -d --name {{ _node }}
             --add-host {{ headscale_hostname }}:host-gateway
             -e TS_AUTHKEY={{ (_key.stdout | from_json).key }}
-            -e TS_USERSPACE=false -e TS_ACCEPT_DNS=true -e TS_HOSTNAME={{ _node }}
+            -e TS_USERSPACE=true -e TS_ACCEPT_DNS=true -e TS_HOSTNAME={{ _node }}
             -e TS_EXTRA_ARGS=--login-server=https://{{ headscale_hostname }}
             {{ tailscale_image }}
           changed_when: true
@@ -61,7 +63,7 @@
             that: "'tag:ci' in (_nodes.stdout | from_json | selectattr('given_name', 'equalto', _node) | first).tags"
 
         - name: Extra record resolves on the test node via MagicDNS
-          ansible.builtin.command: docker exec {{ _node }} nslookup {{ public_app_hostname }} 100.100.100.100
+          ansible.builtin.command: docker exec {{ _node }} tailscale dns query {{ public_app_hostname }} A
           register: _dns
           until: _edge_ipv4 in _dns.stdout
           retries: 10
@@ -98,8 +100,7 @@
             echo "## node health (names a failed DNS config step)"; docker exec {{ _node }} tailscale status --peers=false
             echo "## node resolv.conf and pre-tailscale backup"
             docker exec {{ _node }} sh -c 'ls -l /etc/resolv*; cat /etc/resolv.conf; cat /etc/resolv.pre-tailscale-backup.conf 2>/dev/null'
-            echo "## node routing for 100.100.100.100"; docker exec {{ _node }} sh -c 'ip rule; ip route get 100.100.100.100; ip route show table 52'
-            echo "## in-domain name via 100.100.100.100"; docker exec {{ _node }} nslookup {{ status_hostname }} 100.100.100.100
+            echo "## in-domain name"; docker exec {{ _node }} tailscale dns query {{ status_hostname }} A
           args:
             executable: /bin/bash
           register: _dns_evidence
