@@ -1,0 +1,24 @@
+# {{ ansible_managed }}
+base-url: https://{{ ntfy_hostname }}
+listen-http: ":2586"
+behind-proxy: true
+cache-file: /var/lib/ntfy/cache.db
+cache-duration: 72h
+auth-file: /var/lib/ntfy/user.db
+auth-default-access: deny-all
+# Declarative (provisioned) users: removing an entry here deletes the user on restart.
+auth-users:
+  - "david:{{ edge_secrets.ntfy_david_password_bcrypt }}:admin"
+  - "alerts:{{ edge_secrets.ntfy_alerts_password_bcrypt }}:user"
+auth-access:
+  - "alerts:{{ ntfy_alert_topic }}:wo"
+auth-tokens:
+  - "alerts:{{ edge_secrets.ntfy_alerts_token }}:edge publishers (kuma, timers)"
+enable-signup: false
+enable-login: true
+enable-reservations: false
+attachment-cache-dir: ""
+# iOS cannot hold a long-lived connection to a self-hosted server: ntfy.sh relays an APNs wake-up
+# carrying only a hash of the topic; the phone then fetches the message from this server over the tailnet.
+upstream-base-url: https://ntfy.sh
+log-format: json

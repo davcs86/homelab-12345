@@ -1,0 +1,239 @@
+---
+# Converges the droplet, reserved IP and Cloud Firewall through the DO v2 API.
+# The digitalocean.cloud firewall module cannot update rules in place, which the per-run SSH allowlist needs.
+- name: Read API token
+  ansible.builtin.set_fact:
+    _do_headers:
+      Authorization: "Bearer {{ lookup('ansible.builtin.env', 'DIGITALOCEAN_TOKEN') }}"
+      Content-Type: application/json
+  no_log: true
+
+- name: Default reserved IP to "create one"
+  ansible.builtin.set_fact:
+    do_reserved_ipv4: "{{ do_reserved_ipv4 | default('') }}"
+
+- name: Fail fast without a token or deploy key
+  ansible.builtin.assert:
+    that:
+      - _do_headers.Authorization | length > 20
+      - deploy_ssh_public_key is match('^ssh-ed25519 ')
+    fail_msg: DIGITALOCEAN_TOKEN and deploy_ssh_public_key must be set.
+
+# ---------- SSH key (embedded into root on first boot, used only by bootstrap-users.yml) ----------
+- name: List account SSH keys
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/account/keys?per_page=200
+    headers: "{{ _do_headers }}"
+  register: _keys
+  no_log: true
+
+- name: Register deploy SSH key
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/account/keys
+    method: POST
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body: {name: "{{ do_droplet_name }}-deploy", public_key: "{{ deploy_ssh_public_key }}"}
+    status_code: 201
+  register: _key_created
+  when: >-
+    _keys.json.ssh_keys | selectattr('public_key', 'equalto', deploy_ssh_public_key) | list | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Resolve deploy key fingerprint
+  ansible.builtin.set_fact:
+    _deploy_key_fp: >-
+      {{ (_key_created.json.ssh_key.fingerprint) if (_key_created is changed)
+         else (_keys.json.ssh_keys | selectattr('public_key', 'equalto', deploy_ssh_public_key) | first).fingerprint }}
+
+# ---------- Droplet ----------
+- name: Find droplet by tag
+  ansible.builtin.uri:
+    url: "https://api.digitalocean.com/v2/droplets?tag_name={{ do_tag }}"
+    headers: "{{ _do_headers }}"
+  register: _droplets
+  no_log: true
+
+- name: Refuse ambiguous state
+  ansible.builtin.assert:
+    that: _droplets.json.droplets | length <= 1
+    fail_msg: "More than one droplet carries tag {{ do_tag }}; resolve manually."
+
+- name: Create droplet
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/droplets
+    method: POST
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body:
+      name: "{{ do_droplet_name }}"
+      region: "{{ do_region }}"
+      size: "{{ do_size }}"
+      image: "{{ ubuntu_image }}"
+      ssh_keys: ["{{ _deploy_key_fp }}"]
+      backups: "{{ do_backups }}"
+      ipv6: "{{ do_ipv6 }}"
+      monitoring: "{{ do_monitoring }}"
+      with_droplet_agent: true
+      tags: ["{{ do_tag }}"]
+    status_code: 202
+  register: _droplet_created
+  when: _droplets.json.droplets | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Wait for droplet to be active
+  ansible.builtin.uri:
+    url: "https://api.digitalocean.com/v2/droplets/{{ (_droplet_created.json.droplet.id) if (_droplet_created is changed) else _droplets.json.droplets[0].id }}"
+    headers: "{{ _do_headers }}"
+  register: _droplet
+  until: _droplet.json.droplet.status == 'active'
+  retries: 60
+  delay: 5
+  no_log: true
+
+- name: Record droplet facts
+  ansible.builtin.set_fact:
+    edge_droplet_id: "{{ _droplet.json.droplet.id }}"
+    edge_droplet_ipv4: "{{ (_droplet.json.droplet.networks.v4 | selectattr('type', 'equalto', 'public') | first).ip_address }}"
+
+- name: Refuse silent drift in size or region
+  ansible.builtin.assert:
+    that:
+      - _droplet.json.droplet.size_slug == do_size
+      - _droplet.json.droplet.region.slug == do_region
+    fail_msg: Droplet size/region differs from inventory; resize or rebuild deliberately (see README).
+
+# ---------- Reserved IPv4 ----------
+- name: List reserved IPs
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/reserved_ips?per_page=200
+    headers: "{{ _do_headers }}"
+  register: _rips
+  no_log: true
+
+- name: Select reserved IP already bound to the droplet
+  ansible.builtin.set_fact:
+    _rip_bound: >-
+      {{ _rips.json.reserved_ips | selectattr('droplet', 'truthy')
+         | selectattr('droplet.id', 'equalto', edge_droplet_id | int) | map(attribute='ip') | first | default('') }}
+
+- name: Assign the recorded reserved IP to the droplet
+  ansible.builtin.uri:
+    url: "https://api.digitalocean.com/v2/reserved_ips/{{ do_reserved_ipv4 }}/actions"
+    method: POST
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body: {type: assign, droplet_id: "{{ edge_droplet_id | int }}"}
+    status_code: 201
+  when: _rip_bound == '' and do_reserved_ipv4 | length > 0
+  changed_when: true
+  no_log: true
+
+- name: Create a reserved IP bound to the droplet
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/reserved_ips
+    method: POST
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body: {droplet_id: "{{ edge_droplet_id | int }}"}
+    status_code: 202
+  register: _rip_created
+  when: _rip_bound == '' and do_reserved_ipv4 | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Record reserved IP
+  ansible.builtin.set_fact:
+    edge_public_ip: >-
+      {{ _rip_bound if _rip_bound | length > 0
+         else (do_reserved_ipv4 if do_reserved_ipv4 | length > 0 else _rip_created.json.reserved_ip.ip) }}
+
+- name: Wait until the reserved IP is attached
+  ansible.builtin.uri:
+    url: "https://api.digitalocean.com/v2/reserved_ips/{{ edge_public_ip }}"
+    headers: "{{ _do_headers }}"
+  register: _rip
+  until: (_rip.json.reserved_ip.droplet | default({}) or {}).get('id') == edge_droplet_id | int
+  retries: 30
+  delay: 5
+  no_log: true
+
+- name: Pin the reserved IP in inventory (the workflow commits this file)
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../inventories/prod/group_vars/all/generated.yml"
+    mode: "0644"
+    content: |
+      ---
+      # Written by roles/do_infra on first provision. Do not edit by hand.
+      do_reserved_ipv4: "{{ edge_public_ip }}"
+  when: do_reserved_ipv4 != edge_public_ip
+
+# ---------- Cloud Firewall ----------
+- name: Build desired firewall
+  ansible.builtin.set_fact:
+    _fw_desired:
+      name: "{{ do_firewall_name }}"
+      tags: ["{{ do_tag }}"]
+      inbound_rules: "{{ _fw_public + _fw_ssh }}"
+      outbound_rules:
+        - {protocol: tcp, ports: "0", destinations: {addresses: ["0.0.0.0/0", "::/0"]}}
+        - {protocol: udp, ports: "0", destinations: {addresses: ["0.0.0.0/0", "::/0"]}}
+        - {protocol: icmp, destinations: {addresses: ["0.0.0.0/0", "::/0"]}}
+  vars:
+    _fw_public:
+      - {protocol: tcp, ports: "80", sources: {addresses: ["0.0.0.0/0", "::/0"]}}
+      - {protocol: tcp, ports: "443", sources: {addresses: ["0.0.0.0/0", "::/0"]}}
+      - {protocol: udp, ports: "3478", sources: {addresses: ["0.0.0.0/0", "::/0"]}}
+    _fw_ssh: >-
+      {{ [{'protocol': 'tcp', 'ports': '22', 'sources': {'addresses': ssh_public_allow_cidrs}}]
+         if ssh_public_allow_cidrs | length > 0 else [] }}
+
+- name: List firewalls
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/firewalls?per_page=200
+    headers: "{{ _do_headers }}"
+  register: _fws
+  no_log: true
+
+- name: Select current firewall
+  ansible.builtin.set_fact:
+    _fw_current: "{{ _fws.json.firewalls | selectattr('name', 'equalto', do_firewall_name) | list }}"
+
+- name: Create firewall
+  ansible.builtin.uri:
+    url: https://api.digitalocean.com/v2/firewalls
+    method: POST
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body: "{{ _fw_desired }}"
+    status_code: 202
+  when: _fw_current | length == 0
+  changed_when: true
+  no_log: true
+
+- name: Normalise current and desired inbound rules for comparison
+  ansible.builtin.set_fact:
+    _fw_cmp: "{{ {'current': _fw_current[0].inbound_rules, 'desired': _fw_desired.inbound_rules} | ansible.builtin.dict2items
+                 | map(attribute='value') | map('community.general.json_query', '[].join(`:`, [protocol, ports, join(`,`, sort(sources.addresses))])')
+                 | map('sort') | list }}"
+  when: _fw_current | length == 1
+
+- name: Converge firewall rules
+  ansible.builtin.uri:
+    url: "https://api.digitalocean.com/v2/firewalls/{{ _fw_current[0].id }}"
+    method: PUT
+    headers: "{{ _do_headers }}"
+    body_format: json
+    body: "{{ _fw_desired }}"
+    status_code: 200
+  when:
+    - _fw_current | length == 1
+    - _fw_cmp[0] != _fw_cmp[1] or (_fw_current[0].tags | sort) != (_fw_desired.tags | sort)
+  changed_when: true
+  no_log: true
+
+- name: Show effective inbound exposure
+  ansible.builtin.debug:
+    msg: "{{ _fw_desired.inbound_rules | map(attribute='protocol') | zip(_fw_desired.inbound_rules | map(attribute='ports')) | map('join', '/') | list }}"

@@ -1,0 +1,80 @@
+---
+# Alert plumbing shared by every systemd unit on the edge, plus the external dead-man for the edge itself.
+- name: Ntfy publisher credentials for host units
+  ansible.builtin.copy:
+    dest: /etc/edge-notify.env
+    mode: "0600"
+    content: |
+      NTFY_URL=http://127.0.0.1:2586/{{ ntfy_alert_topic }}
+      NTFY_TOKEN={{ edge_secrets.ntfy_alerts_token }}
+      HC_PING_URL={{ edge_secrets.healthchecks_ping_url }}
+  no_log: true
+
+- name: Notifier script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/edge-notify
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # edge-notify <title> <message> [priority]  - publish to ntfy; never fails the caller.
+      set -u
+      . /etc/edge-notify.env
+      curl -fsS --max-time 10 -H "Authorization: Bearer ${NTFY_TOKEN}" \
+        -H "Title: $1" -H "Priority: ${3:-high}" -H "Tags: rotating_light" \
+        -d "$2" "${NTFY_URL}" >/dev/null || logger -t edge-notify "ntfy publish failed: $1"
+
+- name: OnFailure template unit (any unit can set OnFailure=edge-notify@%n.service)
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/edge-notify@.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Alert on failure of %i
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/edge-notify "edge: %i failed" "%i failed on %H; journalctl -u %i"
+  notify: Reload systemd
+
+# healthchecks.io alerts (by email, independent of ntfy and the tailnet) if these pings stop.
+- name: External dead-man ping
+  ansible.builtin.copy:
+    dest: "/etc/systemd/system/{{ item.name }}"
+    mode: "0644"
+    content: "{{ item.content }}"
+  loop:
+    - name: edge-deadman.service
+      content: |
+        [Unit]
+        Description=Ping external dead-man switch (healthchecks.io)
+        OnFailure=edge-notify@%n.service
+
+        [Service]
+        Type=oneshot
+        EnvironmentFile=/etc/edge-notify.env
+        # Fails (and so does not ping) if any core container is unhealthy.
+        ExecStart=/bin/sh -c 'test -z "$(docker ps --filter health=unhealthy -q)" && curl -fsS --max-time 10 --retry 3 "$HC_PING_URL" >/dev/null'
+    - name: edge-deadman.timer
+      content: |
+        [Unit]
+        Description=Ping external dead-man switch every 5 minutes
+
+        [Timer]
+        OnBootSec=2min
+        OnUnitActiveSec=5min
+        RandomizedDelaySec=20s
+
+        [Install]
+        WantedBy=timers.target
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Reload systemd
+
+- name: Flush systemd reloads
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable dead-man timer
+  ansible.builtin.systemd_service:
+    name: edge-deadman.timer
+    enabled: true
+    state: started

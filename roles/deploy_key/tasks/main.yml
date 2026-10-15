@@ -1,0 +1,48 @@
+---
+# Mints the reusable, ephemeral tag:deploy pre-auth key GitHub Actions uses to reach this VPS over the
+# tailnet, and SOPS-encrypts it into the repo. Runs when the key is missing, near expiry, or on request.
+- name: Existing deploy keys
+  ansible.builtin.command: >-
+    docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale preauthkeys list -o json
+  register: _pak
+  changed_when: false
+
+- name: Decide whether to rotate
+  ansible.builtin.set_fact:
+    _deploy_keys_valid: >-
+      {{ (_pak.stdout | from_json)
+         | selectattr('acl_tags', 'defined') | selectattr('acl_tags', 'contains', 'tag:deploy')
+         | selectattr('expiration.seconds', 'gt', (now(utc=true).timestamp() | int) + deploy_key_min_remaining_seconds)
+         | list }}
+
+- name: Mint and encrypt a new deploy key
+  when: rotate_deploy_key | default(false) | bool or _deploy_keys_valid | length == 0
+  block:
+    - name: Mint
+      ansible.builtin.command: >-
+        docker compose -f {{ edge_root }}/compose.yml exec -T headscale
+        headscale preauthkeys create --tags tag:deploy --reusable --ephemeral
+        --expiration {{ deploy_key_lifetime }} -o json
+      register: _new_key
+      changed_when: true
+      no_log: true
+
+    - name: Encrypt into the repo (recipients come from .sops.yaml)
+      community.sops.sops_encrypt:
+        path: "{{ playbook_dir }}/../secrets/deploy-authkey.sops.yaml"
+        content_yaml:
+          tailscale_deploy_authkey: "{{ (_new_key.stdout | from_json).key }}"
+          expires_at: "{{ '%Y-%m-%dT%H:%M:%SZ' | strftime((_new_key.stdout | from_json).expiration.seconds) }}"
+        force: true
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Expire superseded deploy keys
+      ansible.builtin.command: >-
+        docker compose -f {{ edge_root }}/compose.yml exec -T headscale
+        headscale preauthkeys expire --id {{ item.id }}
+      loop: "{{ _deploy_keys_valid }}"
+      loop_control:
+        label: "{{ item.id }}"
+      changed_when: true

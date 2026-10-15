@@ -1,0 +1,126 @@
+---
+- name: Stack directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ edge_root }}", mode: "0750"}
+    - {path: "{{ edge_root }}/headscale", mode: "0755"}
+    - {path: "{{ edge_root }}/caddy", mode: "0750"}
+    - {path: "{{ edge_root }}/ntfy", mode: "0750"}
+    - {path: /var/log/caddy, mode: "0750"}
+  loop_control:
+    label: "{{ item.path }}"
+
+# ---------- headscale ----------
+- name: Headscale config
+  ansible.builtin.template:
+    src: headscale-config.yaml.j2
+    dest: "{{ edge_root }}/headscale/config.yaml"
+    mode: "0644"
+  notify: Restart headscale
+
+# The "tests" block is CI-only: headscale re-runs it on every reload and would reject updates
+# while tagged nodes are still missing (fresh tailnet, node rebuilt, etc.).
+- name: Render policy without its tests block
+  ansible.builtin.command: python3 {{ playbook_dir }}/../scripts/hujson2json.py {{ playbook_dir }}/../policy/policy.hujson --drop tests
+  delegate_to: localhost
+  become: false
+  register: _policy_json
+  changed_when: false
+  check_mode: false
+
+- name: Headscale policy
+  ansible.builtin.copy:
+    dest: "{{ edge_root }}/headscale/policy.hujson"
+    content: "{{ _policy_json.stdout }}\n"
+    mode: "0644"
+  notify: Reload headscale policy
+
+- name: Seed extra DNS records file (filled in once the edge has a tailnet address)
+  ansible.builtin.copy:
+    dest: "{{ edge_root }}/headscale/extra-records.json"
+    content: "[]\n"
+    mode: "0644"
+    force: false
+
+# ---------- Caddy ----------
+- name: Caddy build context
+  ansible.builtin.copy:
+    src: caddy/Dockerfile
+    dest: "{{ edge_root }}/caddy/Dockerfile"
+    mode: "0644"
+
+- name: Caddy secrets
+  ansible.builtin.copy:
+    dest: "{{ edge_root }}/caddy/caddy.env"
+    content: "DESEC_TOKEN={{ edge_secrets.desec_token }}\n"
+    mode: "0600"
+  no_log: true
+  notify: Restart caddy
+
+# ---------- ntfy ----------
+- name: Ntfy config
+  ansible.builtin.template:
+    src: ntfy-server.yml.j2
+    dest: "{{ edge_root }}/ntfy/server.yml"
+    mode: "0640"
+  no_log: true
+  notify: Restart ntfy
+
+- name: Compose file
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ edge_root }}/compose.yml"
+    mode: "0644"
+
+- name: Build the Caddy image (needed to validate the Caddyfile)
+  ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml build caddy
+  register: _caddy_build
+  changed_when: "'Built' in _caddy_build.stderr or 'naming to' in _caddy_build.stderr"
+
+- name: Caddyfile
+  ansible.builtin.template:
+    src: Caddyfile.j2
+    dest: "{{ edge_root }}/caddy/Caddyfile"
+    mode: "0644"
+    validate: >-
+      docker run --rm --network none -e DESEC_TOKEN=validate -v %s:/etc/caddy/Caddyfile:ro
+      edge-caddy:{{ caddy_version }}-{{ caddy_ratelimit_commit[:12] }} caddy validate --config /etc/caddy/Caddyfile
+  notify: Reload caddy
+
+# ---------- Compose ----------
+- name: Start the stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ edge_root }}"
+    build: never
+    pull: missing
+    remove_orphans: true
+    wait: true
+    wait_timeout: 300
+
+- name: Flush handlers so config changes apply before verification
+  ansible.builtin.meta: flush_handlers
+
+- name: Headscale users
+  ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale users list -o json
+  register: _hs_users
+  changed_when: false
+
+- name: Create missing headscale users
+  ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale users create {{ item }}
+  loop: "{{ headscale_users | difference(_hs_users.stdout | from_json | map(attribute='name') | list) }}"
+  changed_when: true
+
+# curl, not uri: --resolve pins the connection to this host while still validating the public certificate.
+- name: Headscale answers over HTTPS with a publicly trusted certificate  # noqa: command-instead-of-module
+  ansible.builtin.command: >-
+    curl -fsS --max-time 10 --retry 30 --retry-delay 10 --retry-all-errors
+    --resolve {{ headscale_hostname }}:443:127.0.0.1 https://{{ headscale_hostname }}/health
+  register: _hs_health
+  changed_when: false
+
+- name: Show health
+  ansible.builtin.debug:
+    msg: "{{ _hs_health.stdout }}"

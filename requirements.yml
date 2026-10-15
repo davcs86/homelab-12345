@@ -1,0 +1,13 @@
+---
+# Pinned to releases at least two weeks old at time of writing (2026-10-14).
+collections:
+  - name: community.general
+    version: "13.4.0"
+  - name: community.docker
+    version: "5.3.0"
+  - name: ansible.posix
+    version: "2.2.2"
+  - name: community.sops
+    version: "2.4.0"
+  - name: community.crypto
+    version: "3.4.0"

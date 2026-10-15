@@ -1,0 +1,49 @@
+---
+# Runs once as root on a fresh droplet; afterwards root login is disabled by the base role.
+- name: Require public keys before touching the host
+  ansible.builtin.assert:
+    that:
+      - admin_ssh_public_keys | length > 0
+      - deploy_ssh_public_key is match('^ssh-ed25519 ')
+    fail_msg: admin_ssh_public_keys and deploy_ssh_public_key must be set in group_vars.
+
+- name: Create admin user (interactive, password only valid on the DO web console)
+  ansible.builtin.user:
+    name: "{{ admin_user }}"
+    shell: /bin/bash
+    groups: [sudo]
+    append: true
+    password: "{{ edge_secrets.admin_console_password_hash }}"
+    update_password: always
+
+- name: Create deploy user (automation only, no password)
+  ansible.builtin.user:
+    name: "{{ deploy_user }}"
+    shell: /bin/bash
+    password: "!"
+    update_password: always
+
+- name: Authorise admin keys
+  ansible.posix.authorized_key:
+    user: "{{ admin_user }}"
+    key: "{{ admin_ssh_public_keys | join('\n') }}"
+    exclusive: true
+
+- name: Authorise deploy key
+  ansible.posix.authorized_key:
+    user: "{{ deploy_user }}"
+    key: "{{ deploy_ssh_public_key }}"
+    exclusive: true
+
+- name: Sudo policy
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ item.name }}"
+    content: "{{ item.rule }}\n"
+    mode: "0440"
+    validate: /usr/sbin/visudo -cf %s
+  loop:
+    # Admin must type the console password for sudo; deploy is non-interactive.
+    - {name: 10-admin, rule: "{{ admin_user }} ALL=(ALL:ALL) ALL"}
+    - {name: 20-deploy, rule: "{{ deploy_user }} ALL=(ALL:ALL) NOPASSWD: ALL"}
+  loop_control:
+    label: "{{ item.name }}"

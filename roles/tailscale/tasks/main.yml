@@ -1,0 +1,87 @@
+---
+- name: The edge reaches its own control plane locally (no hairpin through the reserved IP)
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '\s{{ headscale_hostname | regex_escape }}$'
+    line: "127.0.0.1 {{ headscale_hostname }}"
+
+- name: Tailscale apt key
+  ansible.builtin.get_url:
+    url: "https://pkgs.tailscale.com/stable/ubuntu/{{ ansible_facts.distribution_release }}.noarmor.gpg"
+    dest: /usr/share/keyrings/tailscale-archive-keyring.gpg
+    mode: "0644"
+
+- name: Tailscale apt source
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/tailscale.list
+    mode: "0644"
+    content: >
+      deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg]
+      https://pkgs.tailscale.com/stable/ubuntu {{ ansible_facts.distribution_release }} main
+  register: _ts_repo
+
+- name: Install pinned tailscale
+  ansible.builtin.apt:
+    name: "tailscale={{ tailscale_package_version }}"
+    update_cache: "{{ _ts_repo is changed }}"
+    allow_downgrade: true
+
+- name: Hold tailscale
+  ansible.builtin.dpkg_selections:
+    name: tailscale
+    selection: hold
+
+- name: Tailscaled running
+  ansible.builtin.systemd_service:
+    name: tailscaled
+    enabled: true
+    state: started
+
+- name: Current tailscale state
+  ansible.builtin.command: tailscale status --json --peers=false
+  register: _ts_status
+  changed_when: false
+  failed_when: false
+
+- name: Join the tailnet as tag:edge with a single-use, 10-minute key
+  when: (_ts_status.stdout | default('{}') | from_json).BackendState | default('') != 'Running'
+  block:
+    - name: Mint pre-auth key
+      ansible.builtin.command: >-
+        docker compose -f {{ edge_root }}/compose.yml exec -T headscale
+        headscale preauthkeys create --tags tag:edge --expiration 10m -o json
+      register: _edge_key
+      changed_when: true
+      no_log: true
+
+    - name: Tailscale up
+      ansible.builtin.command: >-
+        tailscale up --login-server https://{{ headscale_hostname }}
+        --auth-key {{ (_edge_key.stdout | from_json).key }}
+        --hostname {{ edge_tailnet_hostname }}
+        --accept-dns=false --accept-routes=false --ssh=false
+      changed_when: true
+      no_log: true
+
+- name: Edge tailnet addresses
+  ansible.builtin.command: tailscale ip {{ item }}
+  loop: [-4, -6]
+  register: _ts_ip
+  changed_when: false
+
+- name: Record tailnet addresses
+  ansible.builtin.set_fact:
+    edge_tailnet_ipv4: "{{ _ts_ip.results[0].stdout | trim }}"
+    edge_tailnet_ipv6: "{{ _ts_ip.results[1].stdout | trim }}"
+
+# Split horizon: inside the tailnet these names resolve to the edge's tailnet address.
+- name: Extra DNS records (headscale hot-reloads this file)
+  ansible.builtin.copy:
+    dest: "{{ edge_root }}/headscale/extra-records.json"
+    mode: "0644"
+    content: "{{ _records | sort(attribute='name') | sort(attribute='type') | to_nice_json(sort_keys=true) }}\n"
+  vars:
+    _names: ["{{ public_app_hostname }}", "{{ kuma_hostname }}", "{{ ntfy_hostname }}"]
+    _records: >-
+      {{ _names | map('community.general.dict_kv', 'name') | map('combine', {'type': 'A', 'value': edge_tailnet_ipv4}) | list
+         + _names | map('community.general.dict_kv', 'name') | map('combine', {'type': 'AAAA', 'value': edge_tailnet_ipv6}) | list }}

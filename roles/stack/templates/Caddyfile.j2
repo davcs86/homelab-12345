@@ -1,0 +1,271 @@
+# {{ ansible_managed }}
+# The only reverse proxy on the edge. Public surface: headscale, plus an allowlist on {{ public_app_hostname }}.
+{
+	email {{ acme_email }}
+{% if acme_ca_url | default('') %}
+	acme_ca {{ acme_ca_url }}
+{% endif %}
+	admin localhost:2019
+	servers {
+		# UDP/443 is closed at the cloud firewall, so do not advertise HTTP/3.
+		protocols h1 h2
+	}
+	log default {
+		output stderr
+		format json
+		level INFO
+	}
+}
+
+# DNS-01 through the deSEC-delegated {{ acme_zone }} zone; Cloudflare holds CNAMEs _acme-challenge.<name> -> <label>.{{ acme_zone }}.
+(acme) {
+{% if caddy_test_mode | default(false) %}
+	tls internal
+{% else %}
+	tls {
+		dns desec {
+			token {env.DESEC_TOKEN}
+		}
+		dns_challenge_override_domain {args[0]}
+		propagation_timeout 10m
+	}
+{% endif %}
+}
+
+(access_log) {
+	log {
+		output file /var/log/caddy/{args[0]}.access.log {
+			roll_size 50MiB
+			roll_keep 5
+			roll_keep_for 720h
+		}
+		format filter {
+			# OAuth parameters are single-use but still credentials while in flight.
+			request>uri query {
+				delete code
+				delete state
+				delete txn
+				delete agent_cb
+				delete code_verifier
+			}
+			wrap json
+		}
+	}
+}
+
+# Must be the first handle in its scope: `handle` blocks with non-path matchers run in written order.
+(tailnet_only) {
+	@outside_tailnet not remote_ip {{ tailnet_v4_prefix }} {{ tailnet_v6_prefix }}
+	handle @outside_tailnet {
+		abort
+	}
+}
+
+(app_ui) {
+	reverse_proxy {{ app_tailnet_host }}:{{ app_ui_port }} {
+		transport http {
+			resolvers 100.100.100.100
+		}
+	}
+}
+
+# The agent's routes are root-relative; DO App Platform stripped /agent too.
+(agent) {
+	uri strip_prefix /agent
+	reverse_proxy {{ app_tailnet_host }}:{{ app_agent_port }} {
+		flush_interval -1
+		transport http {
+			resolvers 100.100.100.100
+		}
+	}
+}
+
+{{ headscale_hostname }} {
+	import acme hs.{{ acme_zone }}
+	import access_log headscale
+
+	# headscale's HTTP API needs an API key, but it has no reason to be reachable from the internet.
+	@admin_api path /api/* /swagger*
+	handle @admin_api {
+		import tailnet_only
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			flush_interval -1
+		}
+	}
+}
+
+{{ public_app_hostname }} {
+	import acme xstockstrat.{{ acme_zone }}
+	import access_log xstockstrat
+
+	# Tailnet clients reach this name via the split-horizon extra record and get the full app.
+	@tailnet remote_ip {{ tailnet_v4_prefix }} {{ tailnet_v6_prefix }}
+	handle @tailnet {
+		@agent_any path /agent /agent/*
+		handle @agent_any {
+			import agent
+		}
+		handle {
+			import app_ui
+		}
+	}
+
+	# Internet: MCP endpoint + Claude.ai OAuth login only. Everything else is 404.
+	handle {
+		rate_limit {
+			zone general {
+				key {remote_host}
+				window {{ ratelimit.general.window }}
+				events {{ ratelimit.general.events }}
+				ipv6_prefix 64
+			}
+			zone mcp {
+				match {
+					path /agent /agent/
+				}
+				key {remote_host}
+				window {{ ratelimit.mcp.window }}
+				events {{ ratelimit.mcp.events }}
+				ipv6_prefix 64
+			}
+			zone oauth {
+				match {
+					path /agent/oauth/authorize /agent/oauth/callback /agent/oauth/token
+				}
+				key {remote_host}
+				window {{ ratelimit.oauth.window }}
+				events {{ ratelimit.oauth.events }}
+				ipv6_prefix 64
+			}
+			zone register {
+				match {
+					path /agent/oauth/register
+				}
+				key {remote_host}
+				window {{ ratelimit.register.window }}
+				events {{ ratelimit.register.events }}
+				ipv6_prefix 64
+			}
+			# Login has no lockout or MFA upstream; these two zones are the only brute-force control.
+			zone login {
+				match {
+					method POST
+					path /api/auth/login
+				}
+				key {remote_host}
+				window {{ ratelimit.login.window }}
+				events {{ ratelimit.login.events }}
+				ipv6_prefix 64
+			}
+			zone login_hourly {
+				match {
+					method POST
+					path /api/auth/login
+				}
+				key {remote_host}
+				window {{ ratelimit.login_hourly.window }}
+				events {{ ratelimit.login_hourly.events }}
+				ipv6_prefix 64
+			}
+		}
+
+		# TODO(verify): Anthropic has not been confirmed to publish stable egress ranges for remote MCP
+		# connectors. Once confirmed, restrict the MCP + token endpoints, e.g.:
+		#   @not_anthropic {
+		#       path /agent /agent/ /agent/oauth/token /agent/oauth/register
+		#       not remote_ip <ranges>
+		#   }
+		#   respond @not_anthropic 403
+
+		@mcp path /agent /agent/
+		handle @mcp {
+			request_body {
+				max_size {{ body_limits.mcp }}
+			}
+			import agent
+		}
+
+		@agent_meta path /agent/.well-known/oauth-protected-resource /agent/.well-known/oauth-authorization-server
+		handle @agent_meta {
+			import agent
+		}
+
+		@agent_register path /agent/oauth/register
+		handle @agent_register {
+			request_body {
+				max_size {{ body_limits.register }}
+			}
+			import agent
+		}
+
+		@agent_oauth path /agent/oauth/authorize /agent/oauth/callback /agent/oauth/token
+		handle @agent_oauth {
+			request_body {
+				max_size {{ body_limits.default }}
+			}
+			import agent
+		}
+
+		@root_meta path /.well-known/oauth-protected-resource/agent /.well-known/oauth-authorization-server/agent
+		handle @root_meta {
+			import app_ui
+		}
+
+		@login_page {
+			method GET HEAD
+			path /auth/oauth-login
+		}
+		handle @login_page {
+			import app_ui
+		}
+
+		@login_api {
+			method POST
+			path /api/auth/login
+		}
+		handle @login_api {
+			request_body {
+				max_size {{ body_limits.login }}
+			}
+			import app_ui
+		}
+
+		@assets {
+			method GET HEAD
+			path /_next/static/* /sw.js /manifest.webmanifest /icon-192.png /icon-512.png /icon-512-maskable.png /icon.svg
+		}
+		handle @assets {
+			import app_ui
+		}
+
+		handle {
+			respond "Not Found" 404
+		}
+	}
+}
+
+*.{{ magicdns_base_domain }} {
+	import acme ts.{{ acme_zone }}
+	import access_log tailnet
+	import tailnet_only
+
+	@kuma host {{ kuma_hostname }}
+	handle @kuma {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	@ntfy host {{ ntfy_hostname }}
+	handle @ntfy {
+		reverse_proxy 127.0.0.1:2586 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+}

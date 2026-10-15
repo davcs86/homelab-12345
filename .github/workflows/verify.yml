@@ -1,0 +1,108 @@
+---
+name: verify
+
+# Acceptance checks from outside (an internet vantage point) and from inside the tailnet.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 14 * * *"   # daily external check
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-edge          # never overlaps a deploy
+  cancel-in-progress: false
+
+jobs:
+  external:
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Targets
+        id: t
+        run: |
+          d="$(awk '/^domain:/{print $2}' inventories/prod/group_vars/all/main.yml)"
+          echo "ip=$(awk -F'"' '/^do_reserved_ipv4:/{print $2}' inventories/prod/group_vars/all/generated.yml)" >> "$GITHUB_OUTPUT"
+          echo "hs=hs.$d" >> "$GITHUB_OUTPUT"
+          echo "app=xstockstrat.$d" >> "$GITHUB_OUTPUT"
+      - run: sudo apt-get install -y -q nmap
+
+      - name: Declared firewall = exactly 80/tcp, 443/tcp, 3478/udp from anywhere
+        run: |
+          curl -fsS -H "Authorization: Bearer $DIGITALOCEAN_TOKEN" "https://api.digitalocean.com/v2/firewalls?per_page=200" \
+            | jq -r '.firewalls[] | select(.name=="homelab-edge") | .inbound_rules[] | "\(.protocol)/\(.ports) \(.sources.addresses|sort|join(","))"' \
+            | sort | tee "$RUNNER_TEMP/rules"
+          diff <(printf '%s\n' "tcp/443 0.0.0.0/0,::/0" "tcp/80 0.0.0.0/0,::/0" "udp/3478 0.0.0.0/0,::/0") "$RUNNER_TEMP/rules"
+
+      - name: External TCP scan of all 65535 ports
+        run: |
+          sudo nmap -Pn -sS -p- -T4 --min-rate 1500 --max-retries 2 --open -oG "$RUNNER_TEMP/tcp.gnmap" "${{ steps.t.outputs.ip }}" >/dev/null
+          open="$(grep -oE '[0-9]+/open/tcp' "$RUNNER_TEMP/tcp.gnmap" | cut -d/ -f1 | sort -n | paste -sd, -)"
+          echo "open TCP ports: ${open:-none}"
+          [ "$open" = "80,443" ]
+
+      - name: UDP - STUN answers on 3478; common UDP services do not
+        run: |
+          python3 - "${{ steps.t.outputs.ip }}" <<'EOF'
+          import os, socket, struct, sys
+          ip = sys.argv[1]
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(5)
+          s.sendto(struct.pack("!HHI", 0x0001, 0, 0x2112A442) + os.urandom(12), (ip, 3478))
+          data, _ = s.recvfrom(2048)
+          assert struct.unpack("!H", data[:2])[0] == 0x0101, "not a STUN binding success"
+          print("STUN binding success from", ip)
+          EOF
+          sudo nmap -Pn -sU -p 53,67,69,123,137,161,500,1900,4500,5353,41641 --max-retries 2 "${{ steps.t.outputs.ip }}" | tee "$RUNNER_TEMP/udp.txt"
+          ! grep -E '^[0-9]+/udp +open ' "$RUNNER_TEMP/udp.txt"
+
+      - name: headscale health over HTTPS with a publicly trusted certificate
+        run: |
+          curl -fsS "https://${{ steps.t.outputs.hs }}/health"; echo
+          echo | openssl s_client -connect "${{ steps.t.outputs.hs }}:443" -servername "${{ steps.t.outputs.hs }}" 2>/dev/null \
+            | openssl x509 -noout -issuer -subject -enddate
+
+      - name: Public routes - /agent proxied, everything else 404, login rate limited
+        run: |
+          u="https://${{ steps.t.outputs.app }}"
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          a="$(code -X POST "$u/agent")"; echo "POST /agent -> $a (401 = app up and demanding OAuth, 502 = app offline)"
+          [ "$a" != 404 ]
+          m="$(curl -fsS "$u/agent/.well-known/oauth-protected-resource" || true)"; echo "metadata: ${m:-<app offline>}"
+          for p in / /anything-else /agent/api/tools /trader /api/health; do
+            c="$(code "$u$p")"; echo "GET $p -> $c"; [ "$c" = 404 ]
+          done
+          codes=""; for _ in 1 2 3 4 5 6 7; do codes+="$(code -X POST -H 'content-type: application/json' -d '{}' "$u/api/auth/login") "; done
+          echo "7x POST /api/auth/login -> $codes"
+          grep -q 429 <<<"$codes"
+
+  tailnet:
+    runs-on: ubuntu-24.04
+    environment: production
+    needs: external
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: ./.github/actions/setup
+        with:
+          tailscale: "true"
+      - name: Credentials
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SOPS_KEY: ${{ secrets.SOPS_AGE_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 0700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519 && chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SOPS_KEY" > "$RUNNER_TEMP/sops_key" && chmod 600 "$RUNNER_TEMP/sops_key"
+          echo "SOPS_AGE_SSH_PRIVATE_KEY_FILE=$RUNNER_TEMP/sops_key" >> "$GITHUB_ENV"
+      - id: ts
+        run: scripts/runner-tailnet.sh up
+      - name: Ephemeral tag:ci node joins, is listed, resolves an extra record, disappears offline
+        run: ansible-playbook playbooks/verify-tailnet.yml -e edge_tailnet_address=${{ steps.ts.outputs.edge_ip }}
+      - name: Encrypted backup, push, and restore into a scratch container
+        run: ansible-playbook playbooks/backup-now.yml -e edge_tailnet_address=${{ steps.ts.outputs.edge_ip }}
+      - if: always()
+        run: scripts/runner-tailnet.sh down

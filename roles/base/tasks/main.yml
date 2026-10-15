@@ -1,0 +1,160 @@
+---
+- name: Hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+
+- name: Base packages from the Ubuntu archive (security updates flow via unattended-upgrades)
+  ansible.builtin.apt:
+    name:
+      - unattended-upgrades
+      - apt-listchanges
+      - fail2ban
+      - chrony
+      - sqlite3
+      - jq
+      - rsync
+      - ca-certificates
+      - curl
+      - gnupg
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ---------- SSH ----------
+- name: Harden sshd
+  ansible.builtin.copy:
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    mode: "0644"
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      AuthenticationMethods publickey
+      PubkeyAuthentication yes
+      AllowUsers {{ admin_user }} {{ deploy_user }}
+      X11Forwarding no
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      MaxAuthTries 3
+      LoginGraceTime 30
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+    validate: /usr/sbin/sshd -t -f %s
+  notify: Reload ssh
+
+- name: Remove keys DO injected for root
+  ansible.builtin.file:
+    path: /root/.ssh/authorized_keys
+    state: absent
+
+# ---------- Updates ----------
+- name: Unattended upgrades - security only, Ubuntu origins only (third-party repos stay pinned)
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/52unattended-upgrades-local
+    mode: "0644"
+    content: |
+      Unattended-Upgrade::Allowed-Origins {
+        "${distro_id}:${distro_codename}-security";
+        "${distro_id}ESMApps:${distro_codename}-apps-security";
+        "${distro_id}ESM:${distro_codename}-infra-security";
+      };
+      Unattended-Upgrade::Package-Blacklist {
+        "docker-ce"; "docker-ce-cli"; "containerd.io"; "docker-buildx-plugin"; "docker-compose-plugin";
+        "tailscale"; "pgbackrest";
+      };
+      Unattended-Upgrade::Remove-Unused-Dependencies "true";
+      Unattended-Upgrade::Automatic-Reboot "true";
+      Unattended-Upgrade::Automatic-Reboot-Time "04:30";
+
+- name: Enable periodic apt runs
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+
+# ---------- fail2ban ----------
+- name: Fail2ban jail for sshd (systemd backend)
+  ansible.builtin.copy:
+    dest: /etc/fail2ban/jail.d/sshd.local
+    mode: "0644"
+    content: |
+      [DEFAULT]
+      # Tailnet sources are authenticated by WireGuard; never ban them.
+      ignoreip = 127.0.0.1/8 ::1 {{ tailnet_v4_prefix }} {{ tailnet_v6_prefix }}
+      bantime = 1h
+      findtime = 10m
+      maxretry = 5
+      backend = systemd
+
+      [sshd]
+      enabled = true
+  notify: Restart fail2ban
+
+- name: Fail2ban running
+  ansible.builtin.systemd_service:
+    name: fail2ban
+    enabled: true
+    state: started
+
+# ---------- Time ----------
+- name: Chrony running (replaces systemd-timesyncd)
+  ansible.builtin.systemd_service:
+    name: chrony
+    enabled: true
+    state: started
+
+# ---------- Logs ----------
+- name: Cap journald
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-limits.conf
+    mode: "0644"
+    content: |
+      [Journal]
+      Storage=persistent
+      SystemMaxUse=500M
+      SystemKeepFree=2G
+      MaxRetentionSec=30day
+      Compress=yes
+  notify: Restart journald
+
+# ---------- Memory headroom on a 2 GB host ----------
+- name: Swapfile
+  ansible.builtin.command: >-
+    sh -c 'fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile'
+  args:
+    creates: /swapfile
+
+- name: Swap in fstab
+  ansible.posix.mount:
+    src: /swapfile
+    path: none
+    fstype: swap
+    opts: sw
+    state: present
+
+- name: Swap on
+  ansible.builtin.command: swapon --show=NAME --noheadings
+  register: _swap
+  changed_when: false
+
+- name: Activate swap
+  ansible.builtin.command: swapon /swapfile
+  when: "'/swapfile' not in _swap.stdout"
+  changed_when: true
+
+- name: Kernel parameters
+  ansible.posix.sysctl:
+    name: "{{ item.k }}"
+    value: "{{ item.v }}"
+    sysctl_file: /etc/sysctl.d/60-edge.conf
+  loop:
+    - {k: vm.swappiness, v: "10"}
+    - {k: net.ipv4.ip_forward, v: "1"}          # tailscaled + docker
+    - {k: net.ipv6.conf.all.forwarding, v: "1"}
+    - {k: net.core.rmem_max, v: "7500000"}       # UDP buffers for WireGuard/STUN
+    - {k: net.core.wmem_max, v: "7500000"}
+  loop_control:
+    label: "{{ item.k }}"

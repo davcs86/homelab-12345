@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Restore drill: decrypt the newest archive with the on-host restore-test identity, boot it in a scratch
+# headscale container with no network, and compare its node list and noise key with production.
+set -euo pipefail
+umask 077
+
+archive="${1:-$(ls -1t /var/backups/edge/edge-*.tar.age | head -1)}"
+work="$(mktemp -d)"
+name="edge-restore-test-$$"
+trap 'docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+
+( cd /var/backups/edge && sha256sum -c "$(basename "$archive").sha256" >/dev/null )
+age -d -i /etc/edge-backup/restore-test.agekey "$archive" | tar -C "$work" -xf -
+( cd "$work" && sha256sum -c MANIFEST.sha256 >/dev/null )
+
+mkdir -p "$work/etc" "$work/lib" "$work/run"
+cp "$work/headscale/config.yaml" "$work/headscale/policy.hujson" "$work/headscale/extra-records.json" "$work/etc/"
+cp "$work/headscale/db.sqlite" "$work/headscale/noise_private.key" "$work/headscale/derp_server_private.key" "$work/lib/"
+chmod -R a+rX "$work/etc"
+
+docker run -d --name "$name" --network none \
+  -v "$work/etc:/etc/headscale:ro" -v "$work/lib:/var/lib/headscale" -v "$work/run:/var/run/headscale" \
+  {{ headscale_image }} serve >/dev/null
+for _ in $(seq 1 30); do docker exec "$name" headscale health >/dev/null 2>&1 && break; sleep 1; done
+
+restored="$(docker exec "$name" headscale nodes list -o json | jq -r '[.[].given_name] | sort | join(",")')"
+live="$(docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale nodes list -o json | jq -r '[.[].given_name] | sort | join(",")')"
+restored_users="$(docker exec "$name" headscale users list -o json | jq -r '[.[].name] | sort | join(",")')"
+key_restored="$(sha256sum < "$work/lib/noise_private.key")"
+key_live="$(sha256sum < /var/lib/docker/volumes/edge_headscale-data/_data/noise_private.key)"
+
+echo "archive:        $(basename "$archive")"
+echo "restored users: $restored_users"
+echo "restored nodes: $restored"
+echo "live nodes:     $live"
+[ "$key_restored" = "$key_live" ] || { echo "FAIL noise key differs"; exit 1; }
+echo "noise key:      matches production"
+# Ephemeral nodes may come and go between backup and drill; persistent nodes must all be present.
+missing="$(comm -13 <(tr , '\n' <<<"$restored" | sort) <(docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale nodes list -o json | jq -r '.[] | select(.pre_auth_key.ephemeral != true) | .given_name' | sort))"
+[ -z "$missing" ] || { echo "FAIL persistent nodes missing from backup: $missing"; exit 1; }
+echo "restore drill OK"

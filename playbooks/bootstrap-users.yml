@@ -1,0 +1,23 @@
+---
+# First contact with a fresh droplet, as root with the DO-injected deploy key. Creates the admin and deploy
+# users; site.yml then disables root login. Safe to re-run only while root login is still possible.
+- name: Bootstrap users
+  hosts: edge
+  gather_facts: false
+  vars:
+    ansible_user: root
+  pre_tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+    - name: Gather facts
+      ansible.builtin.setup:
+    - name: Load secrets
+      community.sops.load_vars:
+        file: ../secrets/edge.sops.yaml
+        name: edge_secrets
+      delegate_to: localhost
+      become: false
+      no_log: true
+  roles:
+    - users
