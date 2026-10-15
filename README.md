@@ -85,8 +85,8 @@ the VPS waits for approval on the `production` environment.
      | `_acme-challenge.xstockstrat` | CNAME | `xstockstrat.acme.natanddavehouse.com` |
      | `_acme-challenge.ts` | CNAME | `ts.acme.natanddavehouse.com` (wildcard `*.ts…`) |
 
-   - deSEC: create a token that can only write those three TXT RRsets, only from the reserved IP (see
-     [Rotate the ACME token](#rotate-the-acme-token)). Store it as environment secret `DESEC_TOKEN`.
+   - deSEC: create a token that can only write those three TXT RRsets, only from the droplet's egress addresses
+     (see [Rotate the ACME token](#rotate-the-acme-token)). Store it as environment secret `DESEC_TOKEN`.
    - healthchecks.io: one check, period 5 min, grace 10 min, email to you; ping URL → secret `HC_PING_URL`.
    - Choose and store (≥ 16 chars, also in your password manager): `ADMIN_CONSOLE_PASSWORD`, `NTFY_DAVID_PASSWORD`.
 5. **Actions → init-secrets**. Generates ntfy publisher credentials and the pgBackRest mTLS PKI, encrypts everything
@@ -98,7 +98,8 @@ the VPS waits for approval on the `production` environment.
 8. **Home side**: see [Home-side setup](#home-side-setup).
 
 Rebuilding onto a new droplet: delete the old droplet in DO, run `provision` (re-attaches the same reserved IP, so no
-DNS change), delete the `edge-sfo3-01` line from `known_hosts`, run `bootstrap`, then
+DNS change), delete the `edge-sfo3-01` line from `known_hosts`, replace the deSEC token (the new droplet has new
+egress addresses, see [Rotate the ACME token](#rotate-the-acme-token)), run `bootstrap`, then
 [restore headscale](#restore-headscale-from-backup) so existing nodes keep working.
 
 ## Runbook
@@ -106,13 +107,16 @@ DNS change), delete the `edge-sfo3-01` line from `known_hosts`, run `bootstrap`,
 ### Rotate the ACME token
 
 The token lives in deSEC, can write only `TXT` at `hs`, `xstockstrat`, `ts` in `acme.natanddavehouse.com`, and is
-accepted only from the reserved IP. In the deSEC web UI create a temporary token with *Can manage tokens*, then
-(`$T` = that temporary token, `$IP` = reserved IP):
+accepted only from the droplet's **egress** addresses. These are not the reserved IP: DigitalOcean sends outbound
+traffic from the droplet's own public IPv4 and IPv6 (the droplet page in the DO console, or `networks` in the DO API;
+not the reserved IP), and desec.io has an AAAA record, so Caddy reaches it over IPv6. Both must be allowed. In the deSEC web UI
+create a temporary token with *Can manage tokens*, then (`$T` = that temporary token, `$IP4`/`$IP6` = the egress
+addresses):
 
 ```sh
 API=https://desec.io/api/v1/auth/tokens
 NEW=$(curl -fsS -X POST $API/ -H "Authorization: Token $T" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"caddy-edge-$(date +%Y%m%d)\",\"allowed_subnets\":[\"$IP/32\"],\"max_unused_period\":\"100 00:00:00\"}")
+  -d "{\"name\":\"caddy-edge-$(date +%Y%m%d)\",\"allowed_subnets\":[\"$IP4/32\",\"$IP6/128\"],\"max_unused_period\":\"100 00:00:00\"}")
 ID=$(echo "$NEW" | jq -r .id); echo "$NEW" | jq -r .token   # -> GitHub secret DESEC_TOKEN (shown once)
 P="$API/$ID/policies/rrsets/"
 curl -fsS -X POST $P -H "Authorization: Token $T" -H 'Content-Type: application/json' \
