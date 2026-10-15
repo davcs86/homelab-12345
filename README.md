@@ -27,7 +27,7 @@ and the OAuth login routes; tailnet clients get the whole app through the same n
 | `playbooks/site.yml` | everything on the host: hardening, Docker, stack, tailscale, alerts, backups, pgBackRest repo, deploy key |
 | `playbooks/verify-tailnet.yml` | ephemeral `tag:ci` test node: join, list, extra-record DNS, removal when offline |
 | `playbooks/backup-now.yml` | run backup + restore drill now |
-| `playbooks/node-admin.yml` | register / tag / expire / delete nodes, mint CI key |
+| `playbooks/node-admin.yml` | list / approve / tag / force-reauth / remove devices, mint CI key; writes a run summary |
 | `policy/policy.hujson` | headscale grants + `tests` (tests run in CI only; see Notes) |
 | `roles/stack/templates/` | `Caddyfile`, headscale `config.yaml`, ntfy `server.yml`, `compose.yml` |
 | `inventories/prod/group_vars/all/` | `main.yml` (settings), `versions.yml` (every pin), `generated.yml` (reserved IP) |
@@ -73,6 +73,8 @@ the VPS waits for approval on the `production` environment.
 2. **GitHub → Settings → Environments → `production`**: required reviewer `davcs86`; secrets
    `DIGITALOCEAN_TOKEN` (custom scopes: droplet, firewall, reserved_ip, ssh_key, tag; read regions/sizes/images),
    `DEPLOY_SSH_KEY`, `SOPS_AGE_SSH_PRIVATE_KEY`.
+   **Settings → Secrets and variables → Actions → Repository secrets**: `DIGITALOCEAN_READ_TOKEN`, a second DO token
+   with the single custom scope `firewall:read`. The daily **verify** schedule uses it without the `production` gate.
 3. **Actions → deploy → `provision`**. Creates the droplet and reserved IPv4 and commits `generated.yml`.
 4. **DNS and tokens** (needs the reserved IP from `generated.yml`):
    - Cloudflare (`natanddavehouse.com`, all **DNS-only / grey cloud**):
@@ -134,7 +136,7 @@ and the temporary token in deSEC. `max_unused_period` is 100 days because Caddy 
 
 ### Create an ephemeral tagged pre-auth key for CI
 
-- From GitHub: **node-admin → `ci-key`** mints a reusable, ephemeral `tag:ci` key (24 h) and commits it encrypted to
+- From GitHub: **node-admin → `mint-ci-key`** mints a reusable, ephemeral `tag:ci` key (24 h) and commits it encrypted to
   `secrets/ci-authkey.sops.yaml`; the CI job decrypts it with its SOPS key and runs
   `tailscale up --login-server https://hs.natanddavehouse.com --auth-key "$KEY" --hostname ci-$RUN_ID`.
   Ephemeral nodes are deleted on logout, or 5 minutes after going offline.
@@ -145,16 +147,23 @@ and the temporary token in deSEC. `max_unused_period` is 100 days because Caddy 
 
 ### Add a node
 
-1. On the device: `tailscale up --login-server https://hs.natanddavehouse.com` (Android/iOS: Tailscale app →
-   *Use an alternate server*). It shows a URL ending in `hskey-authreq-…`.
-2. **node-admin → `register`** with that ID and `user` = `david` or `david_admin`.
-3. Servers: then **node-admin → `tag`** (e.g. `tag:app`). Tagged nodes become owned by headscale's `tagged-devices`.
-   For unattended servers prefer a single-use tagged key (`preauthkeys create --tags tag:x --expiration 1h`).
+Every **node-admin** run prints its result and a device table (name, owner/tags, IPv4, online, last seen, key expiry)
+on the run's **Summary** page.
+
+1. On the device: `tailscale up --login-server https://hs.natanddavehouse.com` (Android: Tailscale app → ⋮ →
+   *Change server*; iOS: Settings → Tailscale → *Alternate Coordination Server URL*). It shows a login URL ending in
+   `hskey-authreq-…`.
+2. **node-admin → `approve-device`**: paste that URL (or just the ID) into `registration`, pick `user`
+   (`david` = edge only, `david_admin` = everything).
+3. Servers: also fill `tags` (e.g. `app`; the `tag:` prefix is optional) in the same run, or later with **`set-tags`**.
+   Tagged nodes become owned by headscale's `tagged-devices`. For unattended servers prefer a single-use tagged key
+   (`preauthkeys create --tags tag:x --expiration 1h`).
 
 ### Revoke a node
 
-- **node-admin → `delete`** with the node name: removes it and its key immediately; it must re-register to return.
-- **node-admin → `expire`**: forces re-authentication but keeps the record.
+- **node-admin → `remove-device`** with the device name or ID: removes it and its key immediately; it must
+  re-register to return.
+- **node-admin → `force-reauth`**: forces re-authentication but keeps the record.
 - Lost admin device: also remove its key from `admin_ssh_public_keys` and run **deploy**.
 
 ### Restore headscale from backup

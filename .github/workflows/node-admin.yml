@@ -1,29 +1,34 @@
 ---
 name: node-admin
+run-name: "node-admin: ${{ inputs.action }} ${{ inputs.device }}"
 
-# Add, tag, expire or revoke tailnet nodes, or mint a CI key, from GitHub (works from the mobile app).
+# Manage tailnet devices from GitHub (works from the mobile app). The result and a device table appear
+# on the run's Summary page.
 on:
   workflow_dispatch:
     inputs:
       action:
+        description: What to do
         type: choice
-        options: [list, register, tag, expire, delete, ci-key]
-        default: list
-      auth_id:
-        description: "register: the hskey-authreq-... ID shown by `tailscale up --login-server` on the new device"
+        options: [list-devices, approve-device, set-tags, force-reauth, remove-device, mint-ci-key]
+        default: list-devices
+      registration:
+        description: "approve-device: paste the login URL (or the hskey-authreq-… ID) shown on the new device"
         required: false
       user:
-        description: "register: david or david_admin"
-        required: false
-      node:
-        description: "tag/expire/delete: node name as in `list`"
+        description: "approve-device: who owns it (david = phone/laptop, edge only; david_admin = full access)"
+        type: choice
+        options: [david, david_admin]
+        default: david
+      device:
+        description: "set-tags / force-reauth / remove-device: device name or ID (see list-devices)"
         required: false
       tags:
-        description: "tag: comma-separated, e.g. tag:app"
+        description: "set-tags, or optional on approve-device for servers: e.g. app or db,backup (tag: prefix optional)"
         required: false
 
 permissions:
-  contents: write   # ci-key commits secrets/ci-authkey.sops.yaml
+  contents: write   # mint-ci-key commits secrets/ci-authkey.sops.yaml
 
 concurrency:
   group: deploy-edge
@@ -52,19 +57,26 @@ jobs:
       - name: Run
         env:
           IN_ACTION: ${{ inputs.action }}
-          IN_AUTH_ID: ${{ inputs.auth_id }}
+          IN_REGISTRATION: ${{ inputs.registration }}
           IN_USER: ${{ inputs.user }}
-          IN_NODE: ${{ inputs.node }}
+          IN_DEVICE: ${{ inputs.device }}
           IN_TAGS: ${{ inputs.tags }}
         run: |
-          jq -n --arg action "$IN_ACTION" --arg auth_id "$IN_AUTH_ID" --arg user "$IN_USER" \
-                --arg node "$IN_NODE" --arg tags "$IN_TAGS" --arg edge "${{ steps.ts.outputs.edge_ip }}" \
-                '{action:$action, auth_id:$auth_id, user:$user, node:$node, tags:$tags, edge_tailnet_address:$edge}' > "$RUNNER_TEMP/vars.json"
+          jq -n --arg action "$IN_ACTION" --arg registration "$IN_REGISTRATION" --arg user "$IN_USER" \
+                --arg device "$IN_DEVICE" --arg tags "$IN_TAGS" --arg edge "${{ steps.ts.outputs.edge_ip }}" \
+                --arg summary "$RUNNER_TEMP/summary.md" \
+                '{action:$action, registration:$registration, user:$user, device:$device, tags:$tags,
+                  edge_tailnet_address:$edge, summary_file:$summary}' > "$RUNNER_TEMP/vars.json"
           ansible-playbook playbooks/node-admin.yml -e "@$RUNNER_TEMP/vars.json"
+      - name: Summary
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/summary.md" ]; then cat "$RUNNER_TEMP/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else echo "### ${{ inputs.action }} failed - open the **Run** step for the reason" >> "$GITHUB_STEP_SUMMARY"; fi
       - if: always()
         run: scripts/runner-tailnet.sh down
       - name: Commit CI key
-        if: inputs.action == 'ci-key'
+        if: inputs.action == 'mint-ci-key'
         run: |
           git add secrets/ci-authkey.sops.yaml
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
