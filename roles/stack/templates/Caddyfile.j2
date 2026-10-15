@@ -27,6 +27,9 @@
 			token {env.DESEC_TOKEN}
 		}
 		dns_challenge_override_domain {args[0]}
+		# deSEC's anycast nodes converge after Caddy's own check passes; an early multi-perspective lookup
+		# returns NXDOMAIN, which resolvers then cache for the zone's negative TTL (300s) and every retry fails.
+		propagation_delay 2m
 		propagation_timeout 10m
 	}
 {% endif %}
