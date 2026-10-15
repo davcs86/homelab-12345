@@ -107,6 +107,12 @@
     state: started
 
 # ---------- Logs ----------
+- name: Journald drop-in directory (not shipped by Ubuntu 26.04)
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: "0755"
+
 - name: Cap journald
   ansible.builtin.copy:
     dest: /etc/systemd/journald.conf.d/10-limits.conf
