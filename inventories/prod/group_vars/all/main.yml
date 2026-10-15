@@ -6,7 +6,7 @@ public_app_hostname: "xstockstrat.{{ domain }}"
 magicdns_base_domain: "ts.{{ domain }}"
 acme_zone: "acme.{{ domain }}"          # delegated to deSEC; holds only ACME TXT records
 acme_email: davcs86@gmail.com
-kuma_hostname: "kuma.{{ magicdns_base_domain }}"
+status_hostname: "status.{{ magicdns_base_domain }}"
 ntfy_hostname: "ntfy.{{ magicdns_base_domain }}"
 
 # ---------- DigitalOcean ----------
@@ -22,7 +22,7 @@ do_ipv6: true
 # so later rebuilds re-attach the same address and DNS never changes.
 
 # ---------- Host access ----------
-admin_user: david_admin                  # TODO(confirm): sudo username on the VPS
+admin_user: david_admin
 deploy_user: deploy                      # used only by GitHub Actions
 # Public halves only; private keys never enter the repo.
 admin_ssh_public_keys:
@@ -38,9 +38,9 @@ tailnet_v4_prefix: 100.64.0.0/10
 tailnet_v6_prefix: fd7a:115c:a1e0::/48
 ephemeral_inactivity_timeout: 5m
 # Home nodes as they will be named in MagicDNS (<hostname>.<magicdns_base_domain>).
-app_tailnet_host: "app.{{ magicdns_base_domain }}"      # TODO(confirm): app VM hostname
-pve_tailnet_host: "pve.{{ magicdns_base_domain }}"      # TODO(confirm): Proxmox hostname
-backup_tailnet_host: "backup.{{ magicdns_base_domain }}" # TODO(confirm): SATA backup host hostname
+app_tailnet_host: "app.{{ magicdns_base_domain }}"
+pve_tailnet_host: "pve.{{ magicdns_base_domain }}"
+backup_tailnet_host: "backup.{{ magicdns_base_domain }}"
 
 # ---------- xstockstrat upstreams ----------
 app_ui_port: 3000
@@ -62,8 +62,10 @@ body_limits:
 
 # ---------- Monitoring ----------
 ntfy_alert_topic: homelab-alerts
-heartbeat_interval_seconds: 60
-heartbeat_grace_seconds: 180
+gatus_port: 8081
+# Gatus raises an alert when a pusher is silent for longer than its interval.
+heartbeat_pve_interval: 3m          # Proxmox pushes every 60 s
+heartbeat_backup_interval: 26h      # nightly backup + drill pushes on success
 
 # ---------- Backups ----------
 backup_schedule: "*-*-* 03:17:00 UTC"

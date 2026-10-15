@@ -15,6 +15,10 @@
   ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml restart caddy
   changed_when: true
 
+- name: Restart gatus
+  ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml restart gatus
+  changed_when: true
+
 - name: Restart ntfy
   ansible.builtin.command: docker compose -f {{ edge_root }}/compose.yml restart ntfy
   changed_when: true

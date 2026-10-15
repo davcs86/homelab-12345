@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # {{ ansible_managed }}
-# Nightly: consistent headscale (and Kuma) snapshot -> tar -> age -> local + rsync to the home backup host.
+# Nightly: consistent headscale snapshot -> tar -> age -> local + rsync to the home backup host.
 set -euo pipefail
 umask 077
 
@@ -11,7 +11,7 @@ archive="$out_dir/edge-$stamp.tar.age"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-mkdir -p "$out_dir" "$work/headscale" "$work/kuma"
+mkdir -p "$out_dir" "$work/headscale"
 
 # SQLite online backup API: consistent under concurrent writes, WAL included.
 sqlite3 "$vol_root/edge_headscale-data/_data/db.sqlite" ".backup '$work/headscale/db.sqlite'"
@@ -20,11 +20,7 @@ cp "$vol_root/edge_headscale-data/_data/noise_private.key" "$work/headscale/"
 cp "$vol_root/edge_headscale-data/_data/derp_server_private.key" "$work/headscale/"
 cp {{ edge_root }}/headscale/config.yaml {{ edge_root }}/headscale/policy.hujson {{ edge_root }}/headscale/extra-records.json "$work/headscale/"
 
-if [ -f "$vol_root/edge_kuma-data/_data/kuma.db" ]; then
-  sqlite3 "$vol_root/edge_kuma-data/_data/kuma.db" ".backup '$work/kuma/kuma.db'"
-fi
-
-( cd "$work" && find headscale kuma -type f -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256 )
+( cd "$work" && find headscale -type f -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256 )
 tar -C "$work" -cf - . | age -R /etc/edge-backup/recipients.txt -o "$archive.partial"
 mv "$archive.partial" "$archive"
 sha256sum "$archive" | sed "s#$out_dir/##" > "$archive.sha256"

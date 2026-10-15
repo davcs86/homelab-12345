@@ -23,9 +23,9 @@ trap cleanup EXIT
   -e caddy_test_mode=true -e app_tailnet_host=127.0.0.1 >/dev/null)
 
 printf '%s
-' 'app_host={{ public_app_hostname }}' 'hs_host={{ headscale_hostname }}' 'kuma_host={{ kuma_hostname }}' >"$work/hosts.j2"
+' 'app_host={{ public_app_hostname }}' 'hs_host={{ headscale_hostname }}' 'status_host={{ status_hostname }}' >"$work/hosts.j2"
 (cd "$repo_root" && ansible localhost -c local -m ansible.builtin.template -a "src=$work/hosts.j2 dest=$work/hosts.env" >/dev/null)
-app_host="" hs_host="" kuma_host=""
+app_host="" hs_host="" status_host=""
 # shellcheck disable=SC1091
 . "$work/hosts.env"
 
@@ -99,7 +99,7 @@ expect "login body over cap"                   "413"                            
 
 expect "headscale proxied"                     "200 headscale GET /health"        "$(req "$hs_host" "https://$hs_host/health")"
 expect "headscale API blocked publicly"        "000"                              "$(req "$hs_host" "https://$hs_host/api/v1/node")"
-expect "tailnet-only wildcard aborts publicly" "000"                              "$(req "$kuma_host" "https://$kuma_host/")"
+expect "tailnet-only wildcard aborts publicly" "000"                              "$(req "$status_host" "https://$status_host/")"
 
 expect "tailnet sees full UI"                  "200 ui GET /trader"               "$(req "$app_host" --interface "$tailnet_ip" "$u/trader")"
 expect "tailnet reaches agent tools"           "200 agent GET /api/tools"         "$(req "$app_host" --interface "$tailnet_ip" "$u/agent/api/tools")"

@@ -58,17 +58,18 @@ services:
       timeout: 5s
       retries: 3
 
-  kuma:
+  gatus:
     <<: *hardening
-    image: {{ uptime_kuma_image }}
-    # The image's /app/data belongs to uid 1000; run as that user instead of granting root DAC_OVERRIDE.
-    user: "1000:1000"
-    ports: ["127.0.0.1:3001:3001"]
-    # MagicDNS: tailnet names (app.{{ magicdns_base_domain }}) and the split-horizon record resolve here.
-    dns: [100.100.100.100]
+    image: {{ gatus_image }}
+    # Host networking: probes reach tailnet peers and 100.100.100.100 directly; web UI bound to 127.0.0.1.
+    network_mode: host
+    env_file: [./gatus/gatus.env]
+    environment:
+      GATUS_CONFIG_PATH: /config/config.yaml
     volumes:
-      - kuma-data:/app/data
-    mem_limit: 384m
+      - ./gatus/config.yaml:/config/config.yaml:ro
+      - gatus-data:/data
+    mem_limit: 128m
 
   ntfy:
     <<: *hardening
@@ -90,5 +91,5 @@ volumes:
   headscale-run:
   caddy-data:
   caddy-config:
-  kuma-data:
+  gatus-data:
   ntfy-data:
