@@ -7,16 +7,6 @@
   gather_facts: true
   gather_subset: [network]
   vars:
-    _stun_probe: |
-      import os, socket, struct, sys
-      for ip in sys.argv[1:]:
-          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
-          try:
-              s.sendto(struct.pack("!HHI", 1, 0, 0x2112A442) + os.urandom(12), (ip, 3478))
-              data, src = s.recvfrom(2048)
-              print(f"{ip}: reply type {struct.unpack('!H', data[:2])[0]:#06x} from {src[0]}")
-          except OSError as e:
-              print(f"{ip}: {type(e).__name__} {e}")
     _targets: "{{ [do_reserved_ipv4, ansible_facts.default_ipv4.address] | unique }}"
   tasks:
     - name: Host state for 3478/udp
@@ -46,17 +36,20 @@
 
     - name: STUN from the runner (internet path) to each public IPv4
       ansible.builtin.command:
-        argv: [python3, -c, "{{ _stun_probe }}", "{{ _targets[0] }}", "{{ _targets[1] | default(_targets[0]) }}"]
+        argv: [python3, "{{ playbook_dir }}/../scripts/stun-probe.py", "{{ _targets[0] }}", "{{ _targets[1] | default(_targets[0]) }}"]
       delegate_to: localhost
       become: false
       register: _from_runner
       changed_when: false
+      failed_when: false
 
     - name: STUN from the edge itself (loopback and its public IPv4s)
-      ansible.builtin.command:
-        argv: [python3, -c, "{{ _stun_probe }}", 127.0.0.1, "{{ _targets[0] }}", "{{ _targets[1] | default(_targets[0]) }}"]
+      ansible.builtin.script:
+        cmd: "{{ playbook_dir }}/../scripts/stun-probe.py 127.0.0.1 {{ _targets | join(' ') }}"
+        executable: python3
       register: _from_edge
       changed_when: false
+      failed_when: false
 
     - name: Collect the capture
       ansible.builtin.async_status:
