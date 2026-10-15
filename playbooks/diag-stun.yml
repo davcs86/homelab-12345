@@ -1,0 +1,74 @@
+---
+# Edge-side evidence for STUN (3478/udp), run from the verify workflow's tailnet job. Read-only, never fails:
+# captures 3478/udp on the edge while the runner sends a STUN binding request to each public IPv4.
+- name: STUN diagnosis
+  hosts: edge
+  become: true
+  gather_facts: true
+  gather_subset: [network]
+  vars:
+    _stun_probe: |
+      import os, socket, struct, sys
+      for ip in sys.argv[1:]:
+          s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(4)
+          try:
+              s.sendto(struct.pack("!HHI", 1, 0, 0x2112A442) + os.urandom(12), (ip, 3478))
+              data, src = s.recvfrom(2048)
+              print(f"{ip}: reply type {struct.unpack('!H', data[:2])[0]:#06x} from {src[0]}")
+          except OSError as e:
+              print(f"{ip}: {type(e).__name__} {e}")
+    _targets: "{{ [do_reserved_ipv4, ansible_facts.default_ipv4.address] | unique }}"
+  tasks:
+    - name: Host state for 3478/udp
+      ansible.builtin.shell: |
+        set -o pipefail
+        echo "## addresses"; ip -4 -brief addr
+        echo "## listeners"; ss -ulnpH 'sport = :3478'
+        echo "## docker publish"; docker compose -f {{ edge_root }}/compose.yml port --protocol udp headscale 3478
+        echo "## nat rules"; (iptables -t nat -S 2>/dev/null; nft list ruleset 2>/dev/null) | grep -n 3478
+        echo "## headscale stun/derp log"; docker compose -f {{ edge_root }}/compose.yml logs --no-color headscale | grep -iE 'stun|derp' | tail -n 15
+      args:
+        executable: /bin/bash
+      register: _state
+      changed_when: false
+      failed_when: false
+
+    - name: Capture 3478/udp on all interfaces
+      ansible.builtin.command: timeout 30 tcpdump -ni any -nn -c 40 udp port 3478
+      async: 45
+      poll: 0
+      register: _capture
+      changed_when: false
+
+    - name: Let the capture attach
+      ansible.builtin.wait_for:
+        timeout: 3
+
+    - name: STUN from the runner (internet path) to each public IPv4
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _stun_probe }}", "{{ _targets[0] }}", "{{ _targets[1] | default(_targets[0]) }}"]
+      delegate_to: localhost
+      become: false
+      register: _from_runner
+      changed_when: false
+
+    - name: STUN from the edge itself (loopback and its public IPv4s)
+      ansible.builtin.command:
+        argv: [python3, -c, "{{ _stun_probe }}", 127.0.0.1, "{{ _targets[0] }}", "{{ _targets[1] | default(_targets[0]) }}"]
+      register: _from_edge
+      changed_when: false
+
+    - name: Collect the capture
+      ansible.builtin.async_status:
+        jid: "{{ _capture.ansible_job_id }}"
+      register: _cap
+      until: _cap.finished
+      retries: 20
+      delay: 3
+      changed_when: false
+      failed_when: false
+
+    - name: Evidence
+      ansible.builtin.debug:
+        msg: "{{ _state.stdout_lines + ['## runner -> edge'] + _from_runner.stdout_lines + ['## edge -> edge'] + _from_edge.stdout_lines
+                 + ['## capture'] + (_cap.stdout_lines | default([])) + (_cap.stderr_lines | default([])) }}"

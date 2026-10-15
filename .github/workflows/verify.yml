@@ -83,7 +83,8 @@ jobs:
     runs-on: ubuntu-24.04
     environment: production
     needs: external
-    if: github.event_name == 'workflow_dispatch'
+    # Independent of the external checks; still run so their failures don't hide tailnet results.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: ./.github/actions/setup
@@ -100,6 +101,8 @@ jobs:
           echo "SOPS_AGE_SSH_PRIVATE_KEY_FILE=$RUNNER_TEMP/sops_key" >> "$GITHUB_ENV"
       - id: ts
         run: scripts/runner-tailnet.sh up
+      - name: STUN evidence from both ends (informational)
+        run: ansible-playbook playbooks/diag-stun.yml -e edge_tailnet_address=${{ steps.ts.outputs.edge_ip }}
       - name: Ephemeral tag:ci node joins, is listed, resolves an extra record, disappears offline
         run: ansible-playbook playbooks/verify-tailnet.yml -e edge_tailnet_address=${{ steps.ts.outputs.edge_ip }}
       - name: Encrypted backup, push, and restore into a scratch container
