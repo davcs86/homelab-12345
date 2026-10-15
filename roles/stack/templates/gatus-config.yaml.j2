@@ -1,0 +1,122 @@
+# {{ ansible_managed }}
+# Every probe and alert is declared here; a rebuild recreates monitoring exactly.
+web:
+  address: 127.0.0.1
+  port: {{ gatus_port }}
+
+storage:
+  type: sqlite
+  path: /data/data.db
+
+alerting:
+  ntfy:
+    url: http://127.0.0.1:2586
+    topic: {{ ntfy_alert_topic }}
+    token: ${NTFY_TOKEN}
+    priority: 4
+    click: https://{{ status_hostname }}
+    default-alert:
+      failure-threshold: 3
+      success-threshold: 2
+      send-on-resolved: true
+
+x-public: &public
+  client:
+    # Public resolver: tests what the internet sees, not the tailnet split-horizon answer.
+    dns-resolver: tcp://1.1.1.1:53
+    timeout: 10s
+x-tailnet: &tailnet
+  client:
+    dns-resolver: udp://100.100.100.100:53
+    timeout: 10s
+
+endpoints:
+  - name: headscale
+    group: edge
+    url: https://{{ headscale_hostname }}/health
+    interval: 1m
+    <<: *public
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].status == pass"
+      - "[CERTIFICATE_EXPIRATION] > 336h"
+    alerts: [{type: ntfy}]
+
+  - name: mcp-oauth-metadata
+    group: public
+    url: https://{{ public_app_hostname }}/.well-known/oauth-protected-resource/agent
+    interval: 2m
+    <<: *public
+    conditions:
+      - "[STATUS] == 200"
+      - "[BODY].resource == https://{{ public_app_hostname }}/agent"
+      - "[CERTIFICATE_EXPIRATION] > 336h"
+    alerts: [{type: ntfy}]
+
+  - name: mcp-requires-auth
+    group: public
+    url: https://{{ public_app_hostname }}/agent
+    method: POST
+    interval: 2m
+    <<: *public
+    conditions:
+      - "[STATUS] == 401"
+    alerts: [{type: ntfy}]
+
+  - name: public-default-404
+    group: public
+    url: https://{{ public_app_hostname }}/
+    interval: 10m
+    <<: *public
+    conditions:
+      - "[STATUS] == 404"
+    alerts: [{type: ntfy}]
+
+  - name: app-ui
+    group: home
+    url: http://{{ app_tailnet_host }}:{{ app_ui_port }}/api/health
+    interval: 1m
+    <<: *tailnet
+    conditions:
+      - "[STATUS] == 200"
+    alerts: [{type: ntfy}]
+
+  - name: app-agent
+    group: home
+    url: http://{{ app_tailnet_host }}:{{ app_agent_port }}/.well-known/oauth-protected-resource
+    interval: 1m
+    <<: *tailnet
+    conditions:
+      - "[STATUS] == 200"
+    alerts: [{type: ntfy}]
+
+  - name: proxmox
+    group: home
+    url: tcp://{{ pve_tailnet_host }}:8006
+    interval: 1m
+    <<: *tailnet
+    conditions:
+      - "[CONNECTED] == true"
+    alerts: [{type: ntfy}]
+
+# Pushed, not polled. Silence longer than the interval is itself the alert (dead-man switch).
+external-endpoints:
+  - name: proxmox-heartbeat
+    group: home
+    token: ${HEARTBEAT_PVE_TOKEN}
+    heartbeat:
+      interval: {{ heartbeat_pve_interval }}
+    alerts:
+      - type: ntfy
+        failure-threshold: 1
+        send-on-resolved: true
+
+  - name: nightly-backup
+    group: edge
+    token: ${HEARTBEAT_BACKUP_TOKEN}
+    heartbeat:
+      interval: {{ heartbeat_backup_interval }}
+    alerts:
+      - type: ntfy
+        failure-threshold: 1
+        send-on-resolved: true

@@ -3,7 +3,7 @@
 
 Operator-chosen values come from the environment (GitHub environment secrets in CI):
   DESEC_TOKEN, HC_PING_URL, ADMIN_CONSOLE_PASSWORD, NTFY_DAVID_PASSWORD
-Everything else (ntfy publisher credentials, pgBackRest mTLS PKI) is generated here.
+Everything else (ntfy publisher credentials, Gatus heartbeat tokens, pgBackRest mTLS PKI) is generated here.
 Usage: init_secrets.py <edge-tls-hostname> <output.sops.yaml>   (needs: sops, openssl, python bcrypt)
 """
 import os
@@ -76,6 +76,8 @@ def main() -> None:
         "ntfy_david_password_bcrypt": bcrypt_hash(os.environ["NTFY_DAVID_PASSWORD"]),
         "ntfy_alerts_password_bcrypt": bcrypt_hash(secrets.token_urlsafe(32)),
         "ntfy_alerts_token": ntfy_token(),
+        "gatus_heartbeat_pve_token": secrets.token_urlsafe(32),
+        "gatus_heartbeat_backup_token": secrets.token_urlsafe(32),
         **pki(edge_host, client_cn),
     }
     plaintext = yaml.safe_dump(doc, sort_keys=True).encode()

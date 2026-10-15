@@ -10,7 +10,7 @@ public entry point into a homelab behind CGNAT. Everything is Ansible, run from 
  devices ──https──► hs.natanddavehouse.com ────────────┼──► headscale :8080 (+ STUN 3478/udp)
                                                        │
                        edge-sfo3-01 (tag:edge) ────────┴──► app.ts… :3000/:9000 (tag:app) ──► db.ts… :5432 (tag:db)
-                       Kuma · ntfy (tailnet-only)            ▲ heartbeat from pve (tag:pve)      │ pgBackRest TLS :8432 → edge
+                       Gatus · ntfy (tailnet-only)           ▲ heartbeat from pve (tag:pve)      │ pgBackRest TLS :8432 ⇄ edge
                        nightly age backup ───rsync/rrsync──► backup.ts… (tag:backup)
 ```
 
@@ -47,7 +47,7 @@ All pins were at least two weeks old on 2026-10-14; container images are pinned 
 | Caddy | 2.11.6 | 2.11.7 was 11 days old |
 | caddy-dns/desec | v1.1.0 | latest release |
 | mholt/caddy-ratelimit | commit `5625512f` (2026-06-12) | only tag (v0.1.0) is from 2024; HEAD has been quiet for 4 months |
-| Uptime Kuma | 2.5.5 | 2.5.6 was 5 days old |
+| Gatus | v5.37.0 | newest ≥ 2 weeks; checks, heartbeats and ntfy alerts are declared in the repo |
 | ntfy | v2.28.0 | v2.29/2.30 under two weeks; 2.28 already has declarative users/ACLs/tokens |
 | Docker CE / CLI | 29.8.2 | 29.9.x under two weeks |
 | containerd.io / compose / buildx | 2.3.6 / 5.5.1 / 0.37.1 | newest ≥ 2 weeks for 26.04 |
@@ -173,9 +173,9 @@ Last resort: `deploy` → `bootstrap` only works on a fresh droplet (root login 
 | Host | Needs |
 |---|---|
 | backup host (`tag:backup`) | user `edge-backup`; `authorized_keys` line printed by the deploy run: `restrict,command="rrsync -wo ~/headscale" ssh-ed25519 …`; then put `ssh-keyscan backup.ts.natanddavehouse.com` output into `backup_host_known_hosts` |
-| Proxmox (`tag:pve`) | systemd timer, every 60 s: `curl -fsS https://kuma.ts.natanddavehouse.com/api/push/<token>` (push token from the Kuma monitor) |
+| Proxmox (`tag:pve`) | systemd timer, every 60 s: `curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "https://status.ts.natanddavehouse.com/api/v1/endpoints/home_proxmox-heartbeat/external?success=true"` (`$TOKEN` = `gatus_heartbeat_pve_token` from `secrets/edge.sops.yaml`); silence for 3 min alerts |
 | app VM (`tag:app`, hostname `app`) | xstockstrat env: `AGENT_PUBLIC_URL=https://xstockstrat.natanddavehouse.com/agent`, `UI_BASE_URL`/`APP_URL=https://xstockstrat.natanddavehouse.com`; config key `agent.oauth.allowed_redirect_uris=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` |
-| DB host (`tag:db`) | pgBackRest **2.59.2**, `repo1-host=edge.ts.natanddavehouse.com`, `repo1-host-type=tls`, client cert/key + CA from `secrets/edge.sops.yaml` (`pgbackrest_tls_client_*`, CN `db-pgbackrest`) |
+| DB host (`tag:db`) | pgBackRest **2.59.2** running its own TLS server on 8432 (the edge pulls backups) and pushing WAL with `repo1-host=edge.ts.natanddavehouse.com`, `repo1-host-type=tls`; client cert/key + CA from `secrets/edge.sops.yaml` (`pgbackrest_tls_client_*`, CN `db-pgbackrest`). Backup schedule on the edge is pending the PG version and data dir. |
 
 ## Notes and decisions
 
@@ -189,5 +189,8 @@ Last resort: `deploy` → `bootstrap` only works on a fresh droplet (root login 
 - **Login hardening is upstream's gap.** xstockstrat login has no lockout or MFA; the Caddy limits (5/min, 30/h per IP
   on `POST /api/auth/login`) are the only brute-force control until the app adds them.
 - **Access logs** drop OAuth `code`, `state`, `txn` and `agent_cb` query values; Caddy redacts credential headers by default.
+- **Monitoring is Gatus** (`roles/stack/templates/gatus-config.yaml.j2`): public probes resolve through 1.1.1.1 (what the
+  internet sees), home probes through MagicDNS; two dead-man heartbeats (Proxmox every 60 s, nightly backup + drill)
+  alert when silent. Status page: `https://status.ts.natanddavehouse.com` (tailnet only).
 - **TODO(verify)**: source-range allowlist for the MCP endpoint, once Anthropic publishes stable connector egress
   ranges (marked in the Caddyfile).

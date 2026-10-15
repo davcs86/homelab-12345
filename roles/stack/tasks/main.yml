@@ -9,6 +9,7 @@
     - {path: "{{ edge_root }}/headscale", mode: "0755"}
     - {path: "{{ edge_root }}/caddy", mode: "0750"}
     - {path: "{{ edge_root }}/ntfy", mode: "0750"}
+    - {path: "{{ edge_root }}/gatus", mode: "0750"}
     - {path: /var/log/caddy, mode: "0750"}
   loop_control:
     label: "{{ item.path }}"
@@ -68,6 +69,25 @@
     mode: "0640"
   no_log: true
   notify: Restart ntfy
+
+# ---------- Gatus ----------
+- name: Gatus config
+  ansible.builtin.template:
+    src: gatus-config.yaml.j2
+    dest: "{{ edge_root }}/gatus/config.yaml"
+    mode: "0644"
+  notify: Restart gatus
+
+- name: Gatus secrets
+  ansible.builtin.copy:
+    dest: "{{ edge_root }}/gatus/gatus.env"
+    content: |
+      NTFY_TOKEN={{ edge_secrets.ntfy_alerts_token }}
+      HEARTBEAT_PVE_TOKEN={{ edge_secrets.gatus_heartbeat_pve_token }}
+      HEARTBEAT_BACKUP_TOKEN={{ edge_secrets.gatus_heartbeat_backup_token }}
+    mode: "0600"
+  no_log: true
+  notify: Restart gatus
 
 - name: Compose file
   ansible.builtin.template:

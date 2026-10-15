@@ -11,7 +11,7 @@ caddy_runtime_image: "caddy:2.11.6@sha256:3422ce6de165df66534f9b9ba50efaf457114e
 caddy_dns_desec_version: v1.1.0
 caddy_ratelimit_commit: 5625512f24f6f59d6f64fb3aafe5eecff0b286db
 
-uptime_kuma_image: "louislam/uptime-kuma:2.5.5@sha256:c74379ac4509ce2d2c2633f509e67003ee2e45b6e995c5e43fc101f45a0e1fbe"
+gatus_image: "twinproduction/gatus:v5.37.0@sha256:094eb186e55235db367e90e9d56140e5897b7044c41de23cde4cc18e6da1242e"
 ntfy_image: "binwiederhier/ntfy:v2.28.0@sha256:6ef4b819f722fccdc036af611c4774cfdc2de821ab74fdd48bbf4c9d6f8973da"
 
 docker_packages:

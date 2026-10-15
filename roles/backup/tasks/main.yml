@@ -73,6 +73,10 @@
         Type=oneshot
         ExecStart=/usr/local/sbin/edge-backup
         ExecStartPost=/usr/local/sbin/edge-backup-verify
+        # Reached only if backup and drill both succeeded; Gatus alerts when this goes quiet.
+        EnvironmentFile=/etc/edge-notify.env
+        ExecStartPost=/bin/sh -c 'curl -fsS --max-time 10 -X POST -H "Authorization: Bearer $HEARTBEAT_BACKUP_TOKEN" \
+          "$GATUS_URL/api/v1/endpoints/edge_nightly-backup/external?success=true"'
         Nice=10
         IOSchedulingClass=idle
     - name: edge-backup.timer

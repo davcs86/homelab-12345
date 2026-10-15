@@ -8,6 +8,8 @@
       NTFY_URL=http://127.0.0.1:2586/{{ ntfy_alert_topic }}
       NTFY_TOKEN={{ edge_secrets.ntfy_alerts_token }}
       HC_PING_URL={{ edge_secrets.healthchecks_ping_url }}
+      GATUS_URL=http://127.0.0.1:{{ gatus_port }}
+      HEARTBEAT_BACKUP_TOKEN={{ edge_secrets.gatus_heartbeat_backup_token }}
   no_log: true
 
 - name: Notifier script

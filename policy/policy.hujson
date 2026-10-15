@@ -22,12 +22,12 @@
     // Admin devices: full reach, including SSH, Postgres, LLM and Proxmox.
     {"src": ["group:admins"], "dst": ["*"], "ip": ["*"]},
 
-    // Everyday devices: only the edge's HTTPS (split-horizon xstockstrat UI, Kuma, ntfy).
+    // Everyday devices: only the edge's HTTPS (split-horizon xstockstrat UI, Gatus, ntfy).
     {"src": ["group:members"], "dst": ["tag:edge"], "ip": ["tcp:443"]},
 
-    // Edge -> app: only the UI and agent ports (public /agent + OAuth routes, tailnet UI, Kuma probes).
+    // Edge -> app: only the UI and agent ports (public /agent + OAuth routes, tailnet UI, Gatus probes).
     {"src": ["tag:edge"], "dst": ["tag:app"], "ip": ["tcp:3000", "tcp:9000"]},
-    // Edge -> Proxmox: Kuma TCP probe of the web UI port only.
+    // Edge -> Proxmox: Gatus TCP probe of the web UI port only.
     {"src": ["tag:edge"], "dst": ["tag:pve"], "ip": ["tcp:8006"]},
     // Edge -> backup host: rsync over SSH, forced to rrsync on the far side.
     {"src": ["tag:edge"], "dst": ["tag:backup"], "ip": ["tcp:22"]},
@@ -39,10 +39,12 @@
     // LLM is reachable only by tag:app, tag:agent (approved) and admins.
     {"src": ["tag:app", "tag:agent"], "dst": ["tag:llm"], "ip": ["tcp:11434"]},
 
-    // Database host -> offsite pgBackRest repo (TLS server, client-cert auth).
+    // pgBackRest offsite repo, mutual TLS both ways: the DB pushes WAL to the edge, and the edge
+    // (the repository host, which runs `backup`) pulls from the DB host's pgBackRest server. Not Postgres 5432.
     {"src": ["tag:db"], "dst": ["tag:edge"], "ip": ["tcp:8432"]},
+    {"src": ["tag:edge"], "dst": ["tag:db"], "ip": ["tcp:8432"]},
 
-    // Proxmox -> Kuma push endpoint (dead-man heartbeat) via Caddy.
+    // Proxmox -> Gatus heartbeat endpoint (dead-man) via Caddy.
     {"src": ["tag:pve"], "dst": ["tag:edge"], "ip": ["tcp:443"]},
 
     // CI ships to the app VM over SSH only.
@@ -50,16 +52,19 @@
     // Deploy runners configure this VPS over SSH only.
     {"src": ["tag:deploy"], "dst": ["tag:edge"], "ip": ["tcp:22"]},
 
-    // TODO(ask): does the OpenClaw VM (tag:agent) need the xstockstrat MCP (tag:app:9000) or anything else?
-    // TODO(ask): should tag:llm ever initiate connections (e.g. model downloads via a tailnet proxy)? Currently none.
+    // OpenClaw -> xstockstrat MCP endpoint only (approved). Still no route to tag:db.
+    {"src": ["tag:agent"], "dst": ["tag:app"], "ip": ["tcp:9000"]},
+
+    // tag:llm initiates nothing on the tailnet; model downloads go straight to the internet.
   ],
 
   // Executed by `headscale policy check`; a failing test rejects the policy.
   "tests": [
-    {"src": "tag:edge",   "accept": ["tag:app:9000", "tag:app:3000"], "deny": ["tag:app:22", "tag:db:5432", "tag:llm:11434"]},
+    {"src": "tag:edge",   "accept": ["tag:app:9000", "tag:app:3000", "tag:db:8432"], "deny": ["tag:app:22", "tag:db:5432", "tag:db:22", "tag:llm:11434"]},
     {"src": "tag:ci",     "accept": ["tag:app:22"], "deny": ["tag:app:3000", "tag:app:9000", "tag:edge:22", "tag:db:5432"]},
     {"src": "tag:deploy", "accept": ["tag:edge:22"], "deny": ["tag:app:22", "tag:edge:443", "tag:db:5432"]},
-    {"src": "tag:agent",  "accept": ["tag:llm:11434"], "deny": ["tag:db:5432", "tag:db:22", "tag:app:9000"]},
+    {"src": "tag:agent",  "accept": ["tag:llm:11434", "tag:app:9000"], "deny": ["tag:db:5432", "tag:db:22", "tag:db:8432", "tag:app:3000", "tag:app:22"]},
+    {"src": "tag:llm",    "deny": ["tag:db:5432", "tag:app:9000", "tag:app:3000", "tag:edge:443", "tag:edge:22"]},
     {"src": "tag:app",    "accept": ["tag:db:5432", "tag:llm:11434"], "deny": ["tag:db:22", "tag:edge:22"]},
     {"src": "tag:db",     "accept": ["tag:edge:8432"], "deny": ["tag:edge:22", "tag:app:3000"]},
     {"src": "tag:pve",    "accept": ["tag:edge:443"], "deny": ["tag:edge:22", "tag:db:5432"]},

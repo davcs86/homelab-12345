@@ -253,9 +253,9 @@
 	import access_log tailnet
 	import tailnet_only
 
-	@kuma host {{ kuma_hostname }}
-	handle @kuma {
-		reverse_proxy 127.0.0.1:3001
+	@status host {{ status_hostname }}
+	handle @status {
+		reverse_proxy 127.0.0.1:{{ gatus_port }}
 	}
 
 	@ntfy host {{ ntfy_hostname }}
