@@ -1,57 +1,94 @@
 ---
 # Day-2 tailnet administration, run on the edge over SSH (from the node-admin workflow or an admin device).
-#   -e action=list
-#   -e action=register auth_id=hskey-authreq-... user=david|david_admin
-#   -e action=tag node=<name> tags=tag:app[,tag:x]
-#   -e action=expire|delete node=<name>
-#   -e action=ci-key [ci_key_hours=24]   -> reusable ephemeral tag:ci key, SOPS-encrypted to secrets/ci-authkey.sops.yaml
+#   -e action=list-devices
+#   -e action=approve-device registration=<URL or hskey-authreq-...> user=david|david_admin [tags=app,db]
+#   -e action=set-tags device=<name|id> tags=app[,db]        (the "tag:" prefix is optional)
+#   -e action=force-reauth|remove-device device=<name|id>
+#   -e action=mint-ci-key [ci_key_hours=24]   -> reusable ephemeral tag:ci key, SOPS-encrypted to secrets/ci-authkey.sops.yaml
+#   -e summary_file=<path on the controller>  -> Markdown result + device table (the workflow shows it as the run summary)
 - name: Tailnet node administration
   hosts: edge
   become: true
   gather_facts: false
   vars:
     _hs: docker compose -f {{ edge_root }}/compose.yml exec -T headscale headscale
+    _actions: [list-devices, approve-device, set-tags, force-reauth, remove-device, mint-ci-key]
+    _needs_device: [set-tags, force-reauth, remove-device]
+    # Accepts the whole registration URL shown on the device, or just the ID.
+    _auth_id: "{{ registration | default('') | regex_search('hskey-authreq-[A-Za-z0-9_-]{24}') or '' }}"
+    _tags: >-
+      {{ (tags | default('')).replace(' ', '').split(',') | select | map('regex_replace', '^(tag:)?', 'tag:') | list }}
   tasks:
-    - name: Validate inputs
+    - name: Check the inputs
       ansible.builtin.assert:
-        that:
-          - action in ['list', 'register', 'tag', 'expire', 'delete', 'ci-key']
-          - action != 'register' or (auth_id | default('') is match('^hskey-authreq-[A-Za-z0-9_-]{24}$') and user | default('') in headscale_users)
-          - action not in ['tag', 'expire', 'delete'] or node | default('') is match('^[a-z0-9-]+$')
-          - action != 'tag' or tags | default('') is match('^tag:[a-z0-9-]+(,tag:[a-z0-9-]+)*$')
+        that: item.ok
+        fail_msg: "{{ item.msg }}"
+        quiet: true
+      loop:
+        - ok: "{{ action | default('') in _actions }}"
+          msg: "action must be one of: {{ _actions | join(', ') }}"
+        - ok: "{{ action != 'approve-device' or _auth_id | length > 0 }}"
+          msg: >-
+            approve-device needs 'registration': paste the URL (or the hskey-authreq-... ID) the device shows
+            after `tailscale up --login-server https://{{ headscale_hostname }}`.
+        - ok: "{{ action != 'approve-device' or user | default('') in headscale_users }}"
+          msg: "approve-device needs 'user': one of {{ headscale_users | join(', ') }}"
+        - ok: "{{ action not in _needs_device or device | default('') | length > 0 }}"
+          msg: "{{ action }} needs 'device': a name or ID from list-devices"
+        - ok: "{{ action != 'set-tags' or _tags | length > 0 }}"
+          msg: "set-tags needs 'tags', e.g. app or app,db"
+        - ok: "{{ _tags | reject('match', '^tag:[a-z0-9-]+$') | list | length == 0 }}"
+          msg: "tags may use only lowercase letters, digits and '-': got {{ _tags | join(', ') }}"
+      loop_control:
+        label: "{{ item.msg | truncate(60) }}"
 
-    - name: Nodes
+    - name: Devices before
       ansible.builtin.command: "{{ _hs }} nodes list -o json"
-      register: _nodes
+      register: _before
       changed_when: false
 
-    - name: Resolve node id
-      ansible.builtin.set_fact:
-        _node_id: "{{ (_nodes.stdout | from_json | selectattr('given_name', 'equalto', node) | first).id }}"
-      when: action in ['tag', 'expire', 'delete']
+    - name: Find the device
+      when: action in _needs_device
+      block:
+        - name: Match by name or ID
+          ansible.builtin.set_fact:
+            _target: >-
+              {{ _before.stdout | from_json | selectattr('given_name', 'equalto', device)
+                 | list + _before.stdout | from_json | selectattr('id', 'equalto', device | int) | list }}
 
-    - name: Register a pending device for a user
-      ansible.builtin.command: "{{ _hs }} auth register --user {{ user }} --auth-id {{ auth_id }}"
-      when: action == 'register'
+        - name: Device exists
+          ansible.builtin.assert:
+            that: _target | length > 0
+            fail_msg: >-
+              No device '{{ device }}'. Known devices:
+              {{ _before.stdout | from_json | map(attribute='given_name') | join(', ') or 'none' }}
+            quiet: true
+
+    - name: Approve a waiting device for a user
+      ansible.builtin.command: "{{ _hs }} auth register --user {{ user }} --auth-id {{ _auth_id }} -o json"
+      register: _approved
+      when: action == 'approve-device'
       changed_when: true
 
     - name: Set tags
-      ansible.builtin.command: "{{ _hs }} nodes tag -i {{ _node_id }} -t {{ tags }}"
-      when: action == 'tag'
+      ansible.builtin.command: >-
+        {{ _hs }} nodes tag -i {{ (_approved.stdout | from_json).id if action == 'approve-device' else _target[0].id }}
+        -t {{ _tags | join(',') }}
+      when: action == 'set-tags' or (action == 'approve-device' and _tags | length > 0)
       changed_when: true
 
-    - name: Expire (forces re-authentication, keeps the record)
-      ansible.builtin.command: "{{ _hs }} nodes expire -i {{ _node_id }}"
-      when: action == 'expire'
+    - name: Force re-authentication (keeps the device record)
+      ansible.builtin.command: "{{ _hs }} nodes expire -i {{ _target[0].id }}"
+      when: action == 'force-reauth'
       changed_when: true
 
-    - name: Delete (revokes the node's key immediately)
-      ansible.builtin.command: "{{ _hs }} nodes delete -i {{ _node_id }} --force"
-      when: action == 'delete'
+    - name: Remove the device (revokes its key immediately)
+      ansible.builtin.command: "{{ _hs }} nodes delete -i {{ _target[0].id }} --force"
+      when: action == 'remove-device'
       changed_when: true
 
     - name: Mint a reusable, ephemeral tag:ci key and encrypt it into the repo
-      when: action == 'ci-key'
+      when: action == 'mint-ci-key'
       block:
         - name: Mint
           ansible.builtin.command: >-
@@ -70,11 +107,45 @@
           become: false
           no_log: true
 
-    - name: Nodes after
-      ansible.builtin.command: "{{ _hs }} nodes list"
+    - name: Devices after
+      ansible.builtin.command: "{{ _hs }} nodes list -o json"
       register: _after
       changed_when: false
 
-    - name: Show
+    - name: Build the summary
+      ansible.builtin.set_fact:
+        _summary: |
+          ### {{ _result }}
+
+          | Device | Owner | IPv4 | Online | Last seen (UTC) | Key expires |
+          |---|---|---|---|---|---|
+          {% for n in _after.stdout | from_json | sort(attribute='given_name') %}
+          {%- set owner = n.tags | default([]) | join(' ') or n.user.name | default('?') %}
+          {%- set ipv4 = n.ip_addresses | default([]) | select('search', '^[0-9.]+$') | first | default('') %}
+          {%- set seen = '%Y-%m-%d %H:%M' | strftime(n.last_seen.seconds) if n.last_seen is defined else '' %}
+          {%- set expires = '%Y-%m-%d' | strftime(n.expiry.seconds) if n.expiry.seconds | default(0) > 0 else 'never' %}
+          | {{ n.given_name }} (id {{ n.id }}) | {{ owner }} | {{ ipv4 }} | {{ 'yes' if n.online | default(false) else 'no' }} | {{ seen }} | {{ expires }} |
+          {% endfor %}
+      vars:
+        _name: "{{ (_target | default([{}]))[0].given_name | default(device | default('')) }}"
+        _result: >-
+          {{ {'list-devices': 'Devices',
+              'approve-device': 'Approved ' ~ ((_approved.stdout | default('{}') | from_json).given_name | default('device')) ~ ' for ' ~ (user | default(''))
+                                ~ ((' with ' ~ _tags | join(' ')) if _tags | length > 0 else ''),
+              'set-tags': 'Tagged ' ~ _name ~ ': ' ~ _tags | join(' '),
+              'force-reauth': _name ~ ' must log in again',
+              'remove-device': 'Removed ' ~ _name,
+              'mint-ci-key': 'New tag:ci key committed to secrets/ci-authkey.sops.yaml (valid ' ~ (ci_key_hours | default(24)) ~ ' h)'}[action] }}
+
+    - name: Show the summary
       ansible.builtin.debug:
-        var: _after.stdout_lines
+        msg: "{{ _summary.splitlines() }}"
+
+    - name: Write the summary for the workflow run page
+      ansible.builtin.copy:
+        dest: "{{ summary_file }}"
+        content: "{{ _summary }}"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      when: summary_file is defined

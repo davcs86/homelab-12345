@@ -15,11 +15,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # No environment gate, so the daily schedule runs unattended: its only secret is a firewall:read-scoped token.
   external:
     runs-on: ubuntu-24.04
-    environment: production
     env:
-      DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+      DIGITALOCEAN_READ_TOKEN: ${{ secrets.DIGITALOCEAN_READ_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: Targets
@@ -33,7 +33,8 @@ jobs:
 
       - name: Declared firewall = exactly 80/tcp, 443/tcp, 3478/udp from anywhere
         run: |
-          curl -fsS -H "Authorization: Bearer $DIGITALOCEAN_TOKEN" "https://api.digitalocean.com/v2/firewalls?per_page=200" \
+          [ -n "$DIGITALOCEAN_READ_TOKEN" ] || { echo "::error::repository secret DIGITALOCEAN_READ_TOKEN is not set (see README)"; exit 1; }
+          curl -fsS -H "Authorization: Bearer $DIGITALOCEAN_READ_TOKEN" "https://api.digitalocean.com/v2/firewalls?per_page=200" \
             | jq -r '.firewalls[] | select(.name=="homelab-edge") | .inbound_rules[] | "\(.protocol)/\(.ports) \(.sources.addresses|sort|join(","))"' \
             | sort | tee "$RUNNER_TEMP/rules"
           diff <(printf '%s\n' "tcp/443 0.0.0.0/0,::/0" "tcp/80 0.0.0.0/0,::/0" "udp/3478 0.0.0.0/0,::/0") "$RUNNER_TEMP/rules"
