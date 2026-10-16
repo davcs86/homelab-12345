@@ -176,13 +176,8 @@
 			}
 		}
 
-		# TODO(verify): Anthropic has not been confirmed to publish stable egress ranges for remote MCP
-		# connectors. Once confirmed, restrict the MCP + token endpoints, e.g.:
-		#   @not_anthropic {
-		#       path /agent /agent/ /agent/oauth/token /agent/oauth/register
-		#       not remote_ip <ranges>
-		#   }
-		#   respond @not_anthropic 403
+		# TODO(verify): restrict the MCP + token endpoints to Anthropic's egress ranges once published
+		# (sketch in docs/decisions.md).
 
 		@mcp path /agent /agent/
 		handle @mcp {

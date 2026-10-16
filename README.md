@@ -28,39 +28,13 @@ and the OAuth login routes; tailnet clients get the whole app through the same n
 | `playbooks/verify-tailnet.yml` | ephemeral `tag:ci` test node: join, list, extra-record DNS, removal when offline |
 | `playbooks/backup-now.yml` | run backup + restore drill now |
 | `playbooks/node-admin.yml` | list / approve / tag / force-reauth / remove devices, mint CI key; writes a run summary |
-| `policy/policy.hujson` | headscale grants + `tests` (tests run in CI only; see Notes) |
+| `playbooks/diag-stun.yml` | read-only STUN evidence from both ends (run by verify) |
+| `scripts/` | offline tests (`policy-test.sh`, `caddy-routing-test.sh`), `stun-probe.py`, `tls-check.py`, `runner-tailnet.sh`, `init_secrets.py` |
+| `policy/policy.hujson` | headscale grants + `tests` (tests run in CI only; see `docs/decisions.md`) |
 | `roles/stack/templates/` | `Caddyfile`, headscale `config.yaml`, ntfy `server.yml`, `compose.yml` |
-| `inventories/prod/group_vars/all/` | `main.yml` (settings), `versions.yml` (every pin), `generated.yml` (reserved IP) |
-| `secrets/` | SOPS files only |
+| `inventories/prod/group_vars/all/` | `main.yml` (settings), `versions.yml` (every pin; rationale in `docs/versions.md`), `generated.yml` (reserved IP) |
+| `secrets/` | SOPS files only (`secrets/README.md`) |
 | `.github/workflows/` | `ci`, `deploy`, `verify`, `init-secrets`, `node-admin` |
-
-## Versions
-
-All pins were at least two weeks old on 2026-10-14; container images are pinned by digest, binaries by checksum.
-
-| Component | Pin | Why this one |
-|---|---|---|
-| Ubuntu | 26.04 LTS (`ubuntu-26-04-x64`) | your choice; Docker, Tailscale and PGDG all publish `resolute` packages |
-| Droplet | `s-1vcpu-2gb-amd`, sfo3 | 2 GB RAM headroom, 50 GB disk (30 GB budget incl. ~15 GB pgBackRest); sfo3 is closest to Hayward |
-| headscale | v0.29.4 | v0.29.5 was one day old; 0.29.5's fixes only touch `via` grants, which this policy does not use |
-| tailscale (edge + runners) | 1.98.10 | newest client inside headscale 0.29.4's generated capability table (≤1.98); 0.29.4 rejects < 1.80 |
-| Caddy | 2.11.6 | 2.11.7 was 11 days old |
-| caddy-dns/desec | v1.1.0 | latest release |
-| mholt/caddy-ratelimit | commit `5625512f` (2026-06-12) | only tag (v0.1.0) is from 2024; HEAD has been quiet for 4 months |
-| Gatus | v5.37.0 | newest ≥ 2 weeks; checks, heartbeats and ntfy alerts are declared in the repo |
-| ntfy | v2.28.0 | v2.29/2.30 under two weeks; 2.28 already has declarative users/ACLs/tokens |
-| Docker CE / CLI | 29.8.2 | 29.9.x under two weeks |
-| containerd.io / compose / buildx | 2.3.6 / 5.5.1 / 0.37.1 | newest ≥ 2 weeks for 26.04 |
-| pgBackRest | 2.59.2 (PGDG) | 2.59.3 under two weeks; **must equal the DB host's version** |
-| ansible-core | 2.21.4 | 2.21.5 under two weeks |
-| collections | general 13.4.0, docker 5.3.0, posix 2.2.2, sops 2.4.0, crypto 3.4.0 | newest ≥ 2 weeks |
-| sops | 3.13.3 | SSH-key age recipients need ≥ 3.10 |
-| age (on edge) | Ubuntu archive 1.2.1 | supports ssh-ed25519 recipients |
-| actions/checkout, setup-python | v7.0.1, v7.0.0 by commit | newest ≥ 2 weeks |
-
-Ubuntu-archive packages (fail2ban, chrony, sqlite3, age, …) are pinned by the release and receive security updates
-through unattended-upgrades. Third-party packages (Docker, Tailscale, pgBackRest) are pinned and `apt-mark hold`, and
-unattended-upgrades is told not to touch them.
 
 ## Rebuild from scratch
 
@@ -88,7 +62,7 @@ the VPS waits for approval on the `production` environment.
      | `_acme-challenge.ts` | CNAME | `ts.acme.natanddavehouse.com` (wildcard `*.ts…`) |
 
    - deSEC: create a token that can only write those three TXT RRsets, only from the droplet's egress addresses
-     (see [Rotate the ACME token](#rotate-the-acme-token)). Store it as environment secret `DESEC_TOKEN`.
+     (see [`docs/runbooks/acme-token.md`](docs/runbooks/acme-token.md)). Store it as environment secret `DESEC_TOKEN`.
    - healthchecks.io: one check, period 5 min, grace 10 min, email to you; ping URL → secret `HC_PING_URL`.
    - Choose and store (≥ 16 chars, also in your password manager): `ADMIN_CONSOLE_PASSWORD`, `NTFY_DAVID_PASSWORD`.
 5. **Actions → init-secrets**. Generates ntfy publisher credentials and the pgBackRest mTLS PKI, encrypts everything
@@ -97,113 +71,21 @@ the VPS waits for approval on the `production` environment.
    `inventories/prod/known_hosts`, configures everything, mints the `tag:deploy` key, then **closes 22/tcp and proves
    it from the runner** (also on failure). From here on use mode `tailnet`.
 7. **Actions → verify**. External scan + HTTPS/routing/rate-limit checks, then the tailnet test node and a backup drill.
-8. **Home side**: see [Home-side setup](#home-side-setup).
+8. **Home side**: see [`docs/runbooks/home-side.md`](docs/runbooks/home-side.md).
 
 Rebuilding onto a new droplet: delete the old droplet in DO, run `provision` (re-attaches the same reserved IP, so no
 DNS change), delete the `edge-sfo3-01` line from `known_hosts`, replace the deSEC token (the new droplet has new
-egress addresses, see [Rotate the ACME token](#rotate-the-acme-token)), run `bootstrap`, then
-[restore headscale](#restore-headscale-from-backup) so existing nodes keep working.
+egress addresses, see [`docs/runbooks/acme-token.md`](docs/runbooks/acme-token.md)), run `bootstrap`, then
+[restore headscale](docs/runbooks/recovery.md) so existing nodes keep working.
 
-## Runbook
+## Documentation
 
-### Rotate the ACME token
-
-The token lives in deSEC, can write only `TXT` at `hs`, `xstockstrat`, `ts` in `acme.natanddavehouse.com`, and is
-accepted only from the droplet's **egress** addresses. These are not the reserved IP: DigitalOcean sends outbound
-traffic from the droplet's own public IPv4 and IPv6 (the droplet page in the DO console, or `networks` in the DO API;
-not the reserved IP), and desec.io has an AAAA record, so Caddy reaches it over IPv6. Both must be allowed. In the deSEC web UI
-create a temporary token with *Can manage tokens*, then (`$T` = that temporary token, `$IP4`/`$IP6` = the egress
-addresses):
-
-```sh
-API=https://desec.io/api/v1/auth/tokens
-NEW=$(curl -fsS -X POST $API/ -H "Authorization: Token $T" -H 'Content-Type: application/json' \
-  -d "{\"name\":\"caddy-edge-$(date +%Y%m%d)\",\"allowed_subnets\":[\"$IP4/32\",\"$IP6/128\"],\"max_unused_period\":\"100 00:00:00\"}")
-ID=$(echo "$NEW" | jq -r .id); echo "$NEW" | jq -r .token   # -> GitHub secret DESEC_TOKEN (shown once)
-P="$API/$ID/policies/rrsets/"
-curl -fsS -X POST $P -H "Authorization: Token $T" -H 'Content-Type: application/json' \
-  -d '{"domain":null,"subname":null,"type":null,"perm_write":false}'
-for s in hs xstockstrat ts; do
-  curl -fsS -X POST $P -H "Authorization: Token $T" -H 'Content-Type: application/json' \
-    -d "{\"domain\":\"acme.natanddavehouse.com\",\"subname\":\"$s\",\"type\":\"TXT\",\"perm_write\":true}"
-done
-```
-
-Then update secret `DESEC_TOKEN`, run **init-secrets** with `overwrite` (this also rotates ntfy publisher credentials
-and the pgBackRest PKI — re-issue the DB host's client cert afterwards) — or, to rotate only this value, edit it in place:
-`sops set secrets/edge.sops.yaml '["desec_token"]' '"<token>"'` — and run **deploy** (`tailnet`). Delete the old token
-and the temporary token in deSEC. `max_unused_period` is 100 days because Caddy only touches it at renewal (~every 60).
-
-### Create an ephemeral tagged pre-auth key for CI
-
-- From GitHub: **node-admin → `mint-ci-key`** mints a reusable, ephemeral `tag:ci` key (24 h) and commits it encrypted to
-  `secrets/ci-authkey.sops.yaml`; the CI job decrypts it with its SOPS key and runs
-  `tailscale up --login-server https://hs.natanddavehouse.com --auth-key "$KEY" --hostname ci-$RUN_ID`.
-  Ephemeral nodes are deleted on logout, or 5 minutes after going offline.
-- From an admin device (over the tailnet):
-  `ssh david_admin@edge 'sudo docker compose -f /opt/edge/compose.yml exec -T headscale headscale preauthkeys create --tags tag:ci --ephemeral --expiration 1h'`
-
-`tag:ci` can reach only `tag:app:22`.
-
-### Add a node
-
-Every **node-admin** run prints its result and a device table (name, owner/tags, IPv4, online, last seen, key expiry)
-on the run's **Summary** page.
-
-1. On the device: `tailscale up --login-server https://hs.natanddavehouse.com` (Android: Tailscale app → ⋮ →
-   *Change server*; iOS: Settings → Tailscale → *Alternate Coordination Server URL*). It shows a login URL ending in
-   `hskey-authreq-…`.
-2. **node-admin → `approve-device`**: paste that URL (or just the ID) into `registration`, pick `user`
-   (`david` = edge only, `david_admin` = everything).
-3. Servers: also fill `tags` (e.g. `app`; the `tag:` prefix is optional) in the same run, or later with **`set-tags`**.
-   Tagged nodes become owned by headscale's `tagged-devices`. For unattended servers prefer a single-use tagged key
-   (`preauthkeys create --tags tag:x --expiration 1h`).
-
-### Revoke a node
-
-- **node-admin → `remove-device`** with the device name or ID: removes it and its key immediately; it must
-  re-register to return.
-- **node-admin → `force-reauth`**: forces re-authentication but keeps the record.
-- Lost admin device: also remove its key from `admin_ssh_public_keys` and run **deploy**.
-
-### Restore headscale from backup
-
-Archives (`edge-<UTC>.tar.age`) are on the backup host and in `/var/backups/edge` (7 days). Decrypt with the
-**offline** backup key: `age -d -i backup edge-….tar.age | tar -x` → `headscale/{db.sqlite,noise_private.key,derp_server_private.key,…}`.
-On the edge: `docker compose -f /opt/edge/compose.yml stop headscale`, copy `db.sqlite` and both keys into
-`/var/lib/docker/volumes/edge_headscale-data/_data/`, start headscale. The noise key is what lets existing clients
-reconnect without re-registering. The nightly job already restores every archive into a network-less scratch
-headscale and compares nodes and noise key with production; a failure alerts via ntfy.
-
-### Break glass
-
-If headscale is down, SSH over the tailnet is too. Use the DigitalOcean web console (Droplet → Access → Recovery/Droplet
-Console), log in as `david_admin` with the console password (SSH stays key-only), and `sudo docker compose -f /opt/edge/compose.yml up -d`.
-Last resort: `deploy` → `bootstrap` only works on a fresh droplet (root login is disabled afterwards).
-
-## Home-side setup
-
-| Host | Needs |
+| Need | Read |
 |---|---|
-| backup host (`tag:backup`) | user `edge-backup`; `authorized_keys` line printed by the deploy run: `restrict,command="rrsync -wo ~/headscale" ssh-ed25519 …`; then put `ssh-keyscan backup.ts.natanddavehouse.com` output into `backup_host_known_hosts` |
-| Proxmox (`tag:pve`) | systemd timer, every 60 s: `curl -fsS -X POST -H "Authorization: Bearer $TOKEN" "https://status.ts.natanddavehouse.com/api/v1/endpoints/home_proxmox-heartbeat/external?success=true"` (`$TOKEN` = `gatus_heartbeat_pve_token` from `secrets/edge.sops.yaml`); silence for 3 min alerts |
-| app VM (`tag:app`, hostname `app`) | xstockstrat env: `AGENT_PUBLIC_URL=https://xstockstrat.natanddavehouse.com/agent`, `UI_BASE_URL`/`APP_URL=https://xstockstrat.natanddavehouse.com`; config key `agent.oauth.allowed_redirect_uris=https://claude.ai/api/mcp/auth_callback,https://claude.com/api/mcp/auth_callback` |
-| DB host (`tag:db`) | pgBackRest **2.59.2** running its own TLS server on 8432 (the edge pulls backups) and pushing WAL with `repo1-host=edge.ts.natanddavehouse.com`, `repo1-host-type=tls`; client cert/key + CA from `secrets/edge.sops.yaml` (`pgbackrest_tls_client_*`, CN `db-pgbackrest`). Backup schedule on the edge is pending the PG version and data dir. |
-
-## Notes and decisions
-
-- **Policy tests run in CI only.** headscale re-runs a policy's `tests` on every reload and would reject updates while
-  tagged nodes are missing (fresh tailnet, rebuilt node). The edge receives the policy with `tests` stripped;
-  `scripts/policy-test.sh` registers one fake node per user/tag in a throwaway headscale and runs them.
-- **The edge reaches its own control plane on 127.0.0.1** (`/etc/hosts`), so nothing depends on hairpinning through
-  the reserved IP. Direct WireGuard to the edge uses hole punching (no inbound UDP besides 3478); DERP is the fallback.
-- **Caddy uses host networking** so rate limits and the tailnet split see real client IPs. Upstreams resolve via
-  MagicDNS (`100.100.100.100`); the edge itself runs with `--accept-dns=false`.
-- **Login hardening is upstream's gap.** xstockstrat login has no lockout or MFA; the Caddy limits (5/min, 30/h per IP
-  on `POST /api/auth/login`) are the only brute-force control until the app adds them.
-- **Access logs** drop OAuth `code`, `state`, `txn` and `agent_cb` query values; Caddy redacts credential headers by default.
-- **Monitoring is Gatus** (`roles/stack/templates/gatus-config.yaml.j2`): public probes resolve through 1.1.1.1 (what the
-  internet sees), home probes through MagicDNS; two dead-man heartbeats (Proxmox every 60 s, nightly backup + drill)
-  alert when silent. Status page: `https://status.ts.natanddavehouse.com` (tailnet only).
-- **TODO(verify)**: source-range allowlist for the MCP endpoint, once Anthropic publishes stable connector egress
-  ranges (marked in the Caddyfile).
+| Add, tag or revoke a device; CI pre-auth keys | [`docs/runbooks/tailnet-devices.md`](docs/runbooks/tailnet-devices.md) |
+| Rotate the deSEC ACME token | [`docs/runbooks/acme-token.md`](docs/runbooks/acme-token.md) |
+| Restore headscale; break glass | [`docs/runbooks/recovery.md`](docs/runbooks/recovery.md) |
+| Backup host, Proxmox, app VM, DB host | [`docs/runbooks/home-side.md`](docs/runbooks/home-side.md) |
+| Every pinned version and why | [`docs/versions.md`](docs/versions.md) |
+| Design decisions and traps already hit | [`docs/decisions.md`](docs/decisions.md) |
+| Working rules for AI agents in this repo | [`CLAUDE.md`](CLAUDE.md) |

@@ -1,5 +1,5 @@
 // Headscale tailnet policy (grants syntax). Default deny: anything not granted below is blocked.
-// Deployed to /opt/edge/headscale/policy.hujson; `make policy-test` runs the "tests" block against a scratch headscale.
+// Deployed to /opt/edge/headscale/policy.hujson; `scripts/policy-test.sh` runs the "tests" block against a scratch headscale.
 {
   "groups": {
     "group:admins": ["david_admin@"],

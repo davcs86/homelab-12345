@@ -1,9 +1,4 @@
 ---
-# Tailnet-side acceptance checks, run on the edge over SSH:
-#   1. a throwaway node joins with an ephemeral tag:ci pre-auth key via `tailscale up --login-server`
-#   2. it appears in `headscale nodes list` with tag:ci
-#   3. its own MagicDNS resolver answers an extra_records name with the edge's tailnet address
-#   4. after it goes offline (killed, no logout) headscale deletes it within the ephemeral inactivity timeout
 - name: Verify tailnet behaviour
   hosts: edge
   become: true
