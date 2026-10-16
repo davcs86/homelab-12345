@@ -3,15 +3,39 @@
 Self-hosted [headscale](https://github.com/juanfont/headscale) control plane, embedded DERP/STUN relay, and the only
 public entry point into a homelab behind CGNAT. Everything is Ansible, run from GitHub Actions; secrets are SOPS.
 
-```
-                       internet                                   tailnet (WireGuard, default-deny grants)
- Claude.ai ──https──► xstockstrat.natanddavehouse.com ─┐
-                                                       │  Caddy (only reverse proxy, DNS-01 certs)
- devices ──https──► hs.natanddavehouse.com ────────────┼──► headscale :8080 (+ STUN 3478/udp)
-                                                       │
-                       edge-sfo3-01 (tag:edge) ────────┴──► app.ts… :3000/:9000 (tag:app) ──► db.ts… :5432 (tag:db)
-                       Gatus · ntfy (tailnet-only)           ▲ heartbeat from pve (tag:pve)      │ pgBackRest TLS :8432 ⇄ edge
-                       nightly age backup ───rsync/rrsync──► backup.ts… (tag:backup)
+```mermaid
+flowchart LR
+  subgraph internet["internet"]
+    claude["Claude.ai"]
+    devices["devices"]
+  end
+
+  subgraph edge["edge-sfo3-01 (tag:edge)"]
+    caddy["Caddy<br/>only reverse proxy, DNS-01 certs"]
+    headscale["headscale :8080<br/>+ STUN 3478/udp"]
+    gatus["Gatus"]
+    ntfy["ntfy"]
+    backupjob["nightly age backup"]
+  end
+
+  subgraph tailnet["tailnet (WireGuard, default-deny grants)"]
+    app["app.ts… :3000 / :9000<br/>tag:app"]
+    db["db.ts… :5432<br/>tag:db"]
+    pve["pve<br/>tag:pve"]
+    backuphost["backup.ts…<br/>tag:backup"]
+  end
+
+  claude -- "https xstockstrat.natanddavehouse.com" --> caddy
+  devices -- "https hs.natanddavehouse.com" --> caddy
+  devices -. "STUN 3478/udp" .-> headscale
+  caddy --> headscale
+  caddy --> app
+  caddy --- gatus
+  caddy --- ntfy
+  app --> db
+  db <-- "pgBackRest TLS :8432" --> edge
+  pve -- "heartbeat" --> gatus
+  backupjob -- "rsync / rrsync" --> backuphost
 ```
 
 Public exposure is exactly **80/tcp, 443/tcp, 3478/udp** (DO Cloud Firewall). SSH is reachable only over the tailnet
