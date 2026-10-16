@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Offline functional test of the rendered Caddyfile: public allowlist, /agent prefix strip, 404 default,
-# rate limiting, body caps and the tailnet-only split. Uses Caddy's internal CA and local mock upstreams.
+# Offline test of the rendered Caddyfile against local mock upstreams (Caddy internal CA).
 # Usage: scripts/caddy-routing-test.sh <caddy-image>    (requires docker, ansible, python3, curl, sudo for an lo alias)
 set -euo pipefail
 

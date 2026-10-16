@@ -1,5 +1,5 @@
 ---
-# Every pin is a release at least two weeks old on 2026-10-14. Rationale per pin lives in README.md § Versions.
+# Every pin is a release at least two weeks old on 2026-10-14. Rationale per pin lives in docs/versions.md.
 ubuntu_image: ubuntu-26-04-x64
 
 headscale_version: v0.29.4

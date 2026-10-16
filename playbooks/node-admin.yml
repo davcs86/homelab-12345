@@ -1,11 +1,5 @@
 ---
-# Day-2 tailnet administration, run on the edge over SSH (from the node-admin workflow or an admin device).
-#   -e action=list-devices
-#   -e action=approve-device registration=<URL or hskey-authreq-...> user=david|david_admin [tags=app,db]
-#   -e action=set-tags device=<name|id> tags=app[,db]        (the "tag:" prefix is optional)
-#   -e action=force-reauth|remove-device device=<name|id>
-#   -e action=mint-ci-key [ci_key_hours=24]   -> reusable ephemeral tag:ci key, SOPS-encrypted to secrets/ci-authkey.sops.yaml
-#   -e summary_file=<path on the controller>  -> Markdown result + device table (the workflow shows it as the run summary)
+# Inputs are validated by "Check the inputs"; usage: docs/runbooks/tailnet-devices.md.
 - name: Tailnet node administration
   hosts: edge
   become: true

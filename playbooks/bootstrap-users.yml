@@ -1,7 +1,6 @@
 ---
-# First contact with a fresh droplet, as root with the DO-injected deploy key. Creates the admin and deploy
-# users; site.yml then removes root's keys and disables root login. Re-runnable after a partial bootstrap:
-# once the deploy user can log in, the play connects as that user instead of root.
+# Must stay re-runnable after a partial bootstrap: site.yml removes root's keys, so connect as root
+# only when the deploy user cannot log in yet.
 - name: Bootstrap users
   hosts: edge
   gather_facts: false
